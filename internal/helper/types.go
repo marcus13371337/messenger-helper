@@ -67,7 +67,13 @@ type Message struct {
 	Text           string       `json:"text"`
 	ReplyToID      string       `json:"reply_to_id,omitempty"`
 	Attachments    []Attachment `json:"attachments"`
+	Reactions      []Reacted    `json:"reactions,omitempty"`
 	Encrypted      bool         `json:"encrypted"`
+}
+
+type Reacted struct {
+	SenderID string `json:"sender_id"`
+	Emoji    string `json:"emoji"`
 }
 
 type Reaction struct {
