@@ -24,10 +24,11 @@ func login(ctx context.Context, c *call) (any, error) {
 		return nil, err
 	}
 	messenger, err := s.opts.Connect(ctx, session, s.emit)
-	s.endLogin(messenger)
 	if err != nil {
+		s.endLogin(nil)
 		return nil, err
 	}
+	s.endLogin(messenger)
 	return loginResult{User: messenger.Self()}, nil
 }
 

@@ -19,6 +19,10 @@ func newQuietLog(out io.Writer, secrets func() []string) *quietLog {
 	return &quietLog{out: out, secrets: secrets}
 }
 
+func QuietLog(out io.Writer) io.Writer {
+	return newQuietLog(out, func() []string { return nil })
+}
+
 func (q *quietLog) Write(line []byte) (int, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(line, &fields); err != nil {

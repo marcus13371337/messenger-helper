@@ -193,3 +193,7 @@ func addMedia(message *helper.Message, container mediaTransport, mediaType whats
 	})
 	return true
 }
+
+func (c *Client) selfJID() types.JID {
+	return types.JID{User: userID(c.selfID), Server: types.MessengerServer}
+}

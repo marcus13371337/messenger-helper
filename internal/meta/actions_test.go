@@ -1,0 +1,76 @@
+package meta
+
+import (
+	"context"
+	"errors"
+	"io"
+	"testing"
+
+	"github.com/marcus13371337/messenger-helper/internal/helper"
+)
+
+func TestAttachmentsAreOnlyFetchedFromMetasOwnServers(t *testing.T) {
+	allowed := []string{"https://scontent.xx.fbcdn.net/v/cat.jpg?oh=1", "https://cdn.fbsbx.com/file.pdf"}
+	refused := []string{"http://scontent.xx.fbcdn.net/cat.jpg", "https://evilfbcdn.net/cat.jpg", "https://example.test/fbcdn.net", "file:///etc/passwd", ""}
+
+	for _, url := range allowed {
+		if err := checkDownloadURL(url); err != nil {
+			t.Fatalf("%q refused: %v", url, err)
+		}
+	}
+	for _, url := range refused {
+		if err := checkDownloadURL(url); err == nil {
+			t.Fatalf("%q allowed", url)
+		}
+	}
+}
+
+func TestFileTypeComesFromContentThenName(t *testing.T) {
+	cases := []struct {
+		name string
+		data string
+		want string
+	}{
+		{"photo.bin", "\x89PNG\r\n\x1a\n", "image/png"},
+		{"notes.pdf", "%PDF-1.7", "application/pdf"},
+		{"data.json", `{"a":1}`, "application/json"},
+		{"mystery", "\x00\x01\x02", "application/octet-stream"},
+	}
+	for _, c := range cases {
+		if got := contentTypeOf(c.name, []byte(c.data)); got != c.want {
+			t.Fatalf("contentTypeOf(%q) = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func loginCode(t *testing.T, session helper.Session) string {
+	t.Helper()
+	_, err := Connector(io.Discard)(context.Background(), session, func(helper.Event) {})
+	var known *helper.Error
+	if !errors.As(err, &known) {
+		t.Fatalf("want a plain error, got %v", err)
+	}
+	return known.Code
+}
+
+func TestLoginIsRefusedBeforeTouchingTheNetworkWhenCookiesAreMissing(t *testing.T) {
+	if code := loginCode(t, helper.Session{Cookies: map[string]string{"c_user": "100001", "xs": "x"}}); code != helper.CodeBadSession {
+		t.Fatalf("code %q", code)
+	}
+}
+
+func TestLoginIsRefusedForAnUnknownPlatform(t *testing.T) {
+	session := helper.Session{Platform: "instagram", Cookies: map[string]string{"c_user": "100001", "xs": "x", "datr": "d"}}
+
+	if code := loginCode(t, session); code != helper.CodeBadSession {
+		t.Fatalf("code %q", code)
+	}
+}
+
+func TestAttachmentRefThatIsNotOursIsRefused(t *testing.T) {
+	for _, ref := range []string{"not-base64!", "e30", ""} {
+		if _, err := decodeRef(ref); err == nil {
+			t.Fatalf("ref %q accepted", ref)
+		}
+	}
+}
