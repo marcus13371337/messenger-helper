@@ -18,7 +18,7 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
       - run: scripts/release.sh "$GITHUB_REF_NAME"
-      - run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes --verify-tag $PRERELEASE
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes --verify-tag --prerelease="$PRERELEASE"
         env:
           GH_TOKEN: ${{ github.token }}
-          PRERELEASE: ${{ contains(github.ref_name, '-') && '--prerelease' || '' }}
+          PRERELEASE: ${{ contains(github.ref_name, '-') }}
