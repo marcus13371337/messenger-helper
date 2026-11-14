@@ -6,6 +6,8 @@ import (
 	"io"
 	"testing"
 
+	"go.mau.fi/mautrix-meta/pkg/messagix/types"
+
 	"github.com/marcus13371337/messenger-helper/internal/helper"
 )
 
@@ -59,11 +61,14 @@ func TestLoginIsRefusedBeforeTouchingTheNetworkWhenCookiesAreMissing(t *testing.
 	}
 }
 
-func TestLoginIsRefusedForAnUnknownPlatform(t *testing.T) {
-	session := helper.Session{Platform: "instagram", Cookies: map[string]string{"c_user": "100001", "xs": "x", "datr": "d"}}
+func TestLoginSignsInThroughFacebook(t *testing.T) {
+	jar, err := cookieJar(helper.Session{Cookies: map[string]string{"c_user": "100001", "xs": "x", "datr": "d"}})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	if code := loginCode(t, session); code != helper.CodeBadSession {
-		t.Fatalf("code %q", code)
+	if jar.Platform != types.Facebook {
+		t.Fatalf("platform %v", jar.Platform)
 	}
 }
 
