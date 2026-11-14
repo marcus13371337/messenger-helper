@@ -86,7 +86,7 @@ func (c *Client) Send(ctx context.Context, out helper.Outgoing) ([]helper.Messag
 	return []helper.Message{message}, nil
 }
 
-func (c *Client) sendPlain(ctx context.Context, t *thread, out helper.Outgoing, files []outgoingFile) (helper.Message, error) {
+func (c *Client) sendPlain(ctx context.Context, t knownThread, out helper.Outgoing, files []outgoingFile) (helper.Message, error) {
 	fb, err := c.plainClient(ctx)
 	if err != nil {
 		return helper.Message{}, err
@@ -204,7 +204,7 @@ func takesCaption(contentType string) bool {
 	return strings.HasPrefix(contentType, "image/") && contentType != "image/gif" || strings.HasPrefix(contentType, "video/")
 }
 
-func (c *Client) sendEncrypted(ctx context.Context, t *thread, out helper.Outgoing, files []outgoingFile) ([]helper.Message, error) {
+func (c *Client) sendEncrypted(ctx context.Context, t knownThread, out helper.Outgoing, files []outgoingFile) ([]helper.Message, error) {
 	wa, err := c.encryptedClient(ctx)
 	if err != nil {
 		return nil, err

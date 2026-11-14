@@ -28,6 +28,7 @@ import (
 const (
 	sessionFlushInterval = 5 * time.Second
 	minRestartInterval   = time.Minute
+	maxRestartInterval   = time.Hour
 	maxRestartBackoff    = 5 * time.Minute
 	connectWait          = 20 * time.Second
 )
@@ -59,7 +60,9 @@ type Client struct {
 	waUp         bool
 	waFailed     bool
 	everUp       bool
+	encrypting   bool
 	restarting   bool
+	restarts     int
 	stopped      bool
 	lastRestart  time.Time
 	state        helper.State
@@ -219,14 +222,14 @@ func (c *Client) handleMeta(from *messagix.Client, raw any) {
 }
 
 func (c *Client) metaConnected(from *messagix.Client) {
-	c.mu.Lock()
-	startEncryption := c.wa == nil && c.fb == from && !c.stopped
-	c.mu.Unlock()
 	c.update(func() {
 		c.metaUp = true
 		signal(c.metaReady)
 	})
-	if startEncryption {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.wa == nil && !c.encrypting && c.fb == from && !c.stopped {
+		c.encrypting = true
 		c.background.Go(func() { c.connectEncryption(from) })
 	}
 }
@@ -262,6 +265,7 @@ func (c *Client) currentState() helper.State {
 		return helper.State{State: waiting}
 	default:
 		c.everUp = true
+		c.restarts = 0
 		return helper.State{State: helper.StateConnected}
 	}
 }
@@ -285,8 +289,9 @@ func (c *Client) restart() {
 		return
 	}
 	c.restarting = true
-	wait := time.Until(c.lastRestart.Add(minRestartInterval))
-	c.mu.Unlock()
+	wait := time.Until(c.lastRestart.Add(min(minRestartInterval<<min(c.restarts, 6), maxRestartInterval)))
+	c.restarts++
+	defer c.mu.Unlock()
 	c.background.Go(func() {
 		defer c.update(func() { c.restarting = false })
 		backoff := max(wait, 0)
@@ -316,7 +321,7 @@ func (c *Client) restart() {
 func (c *Client) teardown() {
 	c.mu.Lock()
 	fb, wa := c.fb, c.wa
-	c.fb, c.wa = nil, nil
+	c.fb, c.wa, c.encrypting = nil, nil, false
 	c.metaReady, c.waReady = make(chan struct{}), make(chan struct{})
 	c.mu.Unlock()
 	if fb != nil {

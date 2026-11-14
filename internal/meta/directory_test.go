@@ -135,11 +135,7 @@ func TestHistoryIsRememberedWithoutMessageEvents(t *testing.T) {
 	if len(events) != 0 {
 		t.Fatalf("history produced events %+v", events)
 	}
-	_, thread, err := d.lookup("900001")
-	if err != nil {
-		t.Fatal(err)
-	}
-	newest := d.messagesBefore(thread, nil, 2)
+	newest := d.messagesBefore(group, nil, 2)
 	if len(newest.messages) != 2 || newest.messages[0].ID != "fb:mid.$b" || newest.messages[1].ID != "fb:mid.$c" {
 		t.Fatalf("newest page %+v", newest.messages)
 	}
@@ -147,7 +143,7 @@ func TestHistoryIsRememberedWithoutMessageEvents(t *testing.T) {
 		t.Fatalf("reactions %+v", got)
 	}
 	position := messageCursor(newest.messages[0])
-	older := d.messagesBefore(thread, &position, 2)
+	older := d.messagesBefore(group, &position, 2)
 	if len(older.messages) != 1 || older.messages[0].ID != "fb:mid.$a" {
 		t.Fatalf("older page %+v", older.messages)
 	}
@@ -217,8 +213,7 @@ func TestConversationsArePagedByLastActivity(t *testing.T) {
 	d, _ := syncedDirectory()
 
 	first := d.conversationsBefore(nil, 1)
-	_, newest, _ := d.lookup(first[0].ID)
-	position := threadCursor(newest)
+	position := conversationCursor(first[0])
 	second := d.conversationsBefore(&position, 5)
 
 	if len(first) != 1 || first[0].ID != "900001" {
@@ -233,7 +228,7 @@ func TestUnknownConversationIsNotFound(t *testing.T) {
 	d, _ := syncedDirectory()
 
 	for _, id := range []string{"123", "not-a-number", ""} {
-		if _, _, err := d.lookup(id); err == nil {
+		if _, err := d.lookup(id); err == nil {
 			t.Fatalf("lookup(%q) succeeded", id)
 		}
 	}

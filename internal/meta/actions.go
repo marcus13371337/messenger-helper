@@ -75,29 +75,29 @@ func (c *Client) Conversations(ctx context.Context, q helper.ConversationsQuery)
 	if len(found) > q.Limit {
 		page.Conversations = found[:q.Limit]
 		last := page.Conversations[q.Limit-1]
-		page.Next = cursor{TimestampMs: time.Time(last.LastActivityAt).UnixMilli(), ID: last.ID}.String()
+		page.Next = conversationCursor(last).String()
 	}
 	return page, nil
 }
 
-func (c *Client) findThread(ctx context.Context, conversationID string) (*thread, error) {
-	_, t, err := c.dir.lookup(conversationID)
+func (c *Client) findThread(ctx context.Context, conversationID string) (knownThread, error) {
+	t, err := c.dir.lookup(conversationID)
 	if err == nil {
 		return t, nil
 	}
 	if _, keyErr := parseThreadKey(conversationID); keyErr != nil {
-		return nil, keyErr
+		return knownThread{}, keyErr
 	}
 	fb, clientErr := c.plainClient(ctx)
 	if clientErr != nil {
-		return nil, clientErr
+		return knownThread{}, clientErr
 	}
 	for scanned := 0; scanned < maxThreadPagesToScan; scanned++ {
 		more, loadErr := c.loadMoreThreads(ctx, fb)
 		if loadErr != nil {
-			return nil, loadErr
+			return knownThread{}, loadErr
 		}
-		if _, t, err = c.dir.lookup(conversationID); err == nil || !more {
+		if t, err = c.dir.lookup(conversationID); err == nil || !more {
 			break
 		}
 	}
@@ -120,7 +120,7 @@ func (c *Client) Messages(ctx context.Context, q helper.MessagesQuery) (helper.M
 		}
 		before = &parsed
 	}
-	page := c.dir.messagesBefore(t, before, q.Limit)
+	page := c.dir.messagesBefore(t.key, before, q.Limit)
 	if len(page.messages) < q.Limit && page.hasMoreBefore {
 		if err := c.fetchOlder(ctx, t, olderThan(page, before)); err != nil {
 			return helper.MessagePage{}, err
@@ -131,7 +131,7 @@ func (c *Client) Messages(ctx context.Context, q helper.MessagesQuery) (helper.M
 		case <-ctx.Done():
 			return helper.MessagePage{}, ctx.Err()
 		}
-		page = c.dir.messagesBefore(t, before, q.Limit)
+		page = c.dir.messagesBefore(t.key, before, q.Limit)
 	}
 	out := helper.MessagePage{Messages: page.messages}
 	if len(page.messages) == q.Limit {
@@ -155,7 +155,7 @@ func olderThan(page historyPage, before *cursor) cursor {
 	}
 }
 
-func (c *Client) fetchOlder(ctx context.Context, t *thread, reference cursor) error {
+func (c *Client) fetchOlder(ctx context.Context, t knownThread, reference cursor) error {
 	fb, err := c.plainClient(ctx)
 	if err != nil {
 		return err

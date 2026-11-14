@@ -288,18 +288,25 @@ func (d *directory) conversation(t *thread) helper.Conversation {
 	}
 }
 
-func (d *directory) lookup(conversationID string) (helper.Conversation, *thread, error) {
+type knownThread struct {
+	key  int64
+	kind table.ThreadType
+}
+
+func (t knownThread) encrypted() bool { return t.kind.IsWhatsApp() }
+
+func (d *directory) lookup(conversationID string) (knownThread, error) {
 	key, err := parseThreadKey(conversationID)
 	if err != nil {
-		return helper.Conversation{}, nil, err
+		return knownThread{}, err
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	t, ok := d.threads[key]
 	if !ok || t.kind == table.UNKNOWN_THREAD_TYPE {
-		return helper.Conversation{}, nil, helper.Errorf(helper.CodeNotFound, "The helper has not seen that conversation. List conversations until it shows up, then try again.")
+		return knownThread{}, helper.Errorf(helper.CodeNotFound, "The helper has not seen that conversation. List conversations until it shows up, then try again.")
 	}
-	return d.conversation(t), t, nil
+	return knownThread{key: t.key, kind: t.kind}, nil
 }
 
 func (d *directory) conversationsBefore(before *cursor, limit int) []helper.Conversation {
@@ -329,6 +336,10 @@ func threadCursor(t *thread) cursor {
 	return cursor{TimestampMs: t.lastActivityMs, ID: userID(t.key)}
 }
 
+func conversationCursor(c helper.Conversation) cursor {
+	return cursor{TimestampMs: time.Time(c.LastActivityAt).UnixMilli(), ID: c.ID}
+}
+
 func (c cursor) before(other cursor) bool {
 	return cmp.Or(cmp.Compare(c.TimestampMs, other.TimestampMs), cmp.Compare(c.ID, other.ID)) < 0
 }
@@ -341,9 +352,10 @@ type historyPage struct {
 	changed       <-chan struct{}
 }
 
-func (d *directory) messagesBefore(t *thread, before *cursor, limit int) historyPage {
+func (d *directory) messagesBefore(key int64, before *cursor, limit int) historyPage {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	t := d.ensure(key)
 	sorted := t.sorted()
 	if before != nil {
 		end, _ := slices.BinarySearchFunc(sorted, *before, func(m helper.Message, c cursor) int {

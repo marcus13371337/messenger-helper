@@ -20,7 +20,7 @@ func chatKey(chat types.JID) (int64, bool) {
 	return key, err == nil && key != 0
 }
 
-func chatJID(t *thread) types.JID {
+func chatJID(t knownThread) types.JID {
 	server := types.MessengerServer
 	if !t.kind.IsOneToOne() {
 		server = types.GroupServer
