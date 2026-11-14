@@ -13,7 +13,7 @@ import (
 
 func TestAttachmentsAreOnlyFetchedFromMetasOwnServers(t *testing.T) {
 	allowed := []string{"https://scontent.xx.fbcdn.net/v/cat.jpg?oh=1", "https://cdn.fbsbx.com/file.pdf"}
-	refused := []string{"http://scontent.xx.fbcdn.net/cat.jpg", "https://evilfbcdn.net/cat.jpg", "https://example.test/fbcdn.net", "file:///etc/passwd", ""}
+	refused := []string{"http://scontent.xx.fbcdn.net/cat.jpg", "https://evilfbcdn.net/cat.jpg", "https://www.messenger.com/cat.jpg", "https://example.test/fbcdn.net", "file:///etc/passwd", ""}
 
 	for _, url := range allowed {
 		if err := checkDownloadURL(url); err != nil {
