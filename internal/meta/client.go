@@ -34,8 +34,8 @@ const (
 )
 
 var (
-	errBadSession  = helper.Errorf(helper.CodeBadSession, "Messenger no longer accepts this login. Sign in to Messenger in the browser again.")
-	errNeedsPerson = helper.Errorf(helper.CodeNeedsPerson, "Messenger wants the person to confirm something. Open Messenger in a browser, finish what it asks, then log in again.")
+	errBadSession  = helper.Errorf(helper.CodeBadSession, "Messenger no longer accepts this login. Sign in at facebook.com in the browser again.")
+	errNeedsPerson = helper.Errorf(helper.CodeNeedsPerson, "Messenger wants the person to confirm something. Open facebook.com in a browser, finish what it asks, then log in again.")
 	errUnreachable = helper.Errorf(helper.CodeNotConnected, "Messenger could not be reached. Check the internet connection and try again.")
 )
 
