@@ -54,7 +54,26 @@ go test ./...
 
 The tests run against a fake Meta and never log in anywhere. The code that talks to the real Meta lives in `internal/meta` and can only be tried by hand with your own account, see "Running it by hand" in [PROTOCOL.md](PROTOCOL.md).
 
-`go.mod` repeats the `replace` lines of mautrix-meta's own `go.mod`, because Go does not apply a dependency's replacements. Copy them again when bumping mautrix-meta.
+`scripts/check.sh` runs everything CI runs: gofmt, vet, the tests with the race detector, and the release build.
+
+## Following mautrix-meta
+
+Meta changes its protocol often and mautrix-meta follows within days, so every Monday a workflow runs `scripts/bump-mautrix-meta.sh`. It moves `go.mau.fi/mautrix-meta` to its latest release, copies that release's `replace` lines into `go.mod` (Go does not apply a dependency's replacements), runs `scripts/check.sh` and opens or updates a PR from `bump/mautrix-meta`. When the checks fail the PR is a draft and the run is red. It can also be started by hand from the Actions tab.
+
+The tests run against a fake Meta, so a green bump only says the code still fits. Before merging, try the PR's build against the real Meta with your own account, `go run . --state-dir /tmp/mh` as in "Running it by hand" in [PROTOCOL.md](PROTOCOL.md):
+
+- log in
+- list conversations
+- read history in a plain chat and in an end-to-end encrypted one
+- send a message, and receive one sent from another device
+
+Then merge, and release from `main` with the next patch version:
+
+```
+git switch main && git pull
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
 
 ## Licence
 
