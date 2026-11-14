@@ -39,6 +39,7 @@ type fakeMeta struct {
 	checkpoint    bool
 	sessionBytes  int
 	sendDelay     chan struct{}
+	failAfterSend bool
 	loggedOut     bool
 	closed        bool
 }
@@ -147,7 +148,7 @@ func (f *fakeMeta) Messages(_ context.Context, q helper.MessagesQuery) (helper.M
 }
 
 func (f *fakeMeta) Send(ctx context.Context, out helper.Outgoing) ([]helper.Message, error) {
-	if f.sendDelay != nil {
+	if f.sendDelay != nil && out.Text == "slow" {
 		<-f.sendDelay
 	}
 	f.mu.Lock()
@@ -164,10 +165,14 @@ func (f *fakeMeta) Send(ctx context.Context, out helper.Outgoing) ([]helper.Mess
 		f.sentFiles[file.Path] = content
 	}
 	f.sent = append(f.sent, out)
-	return []helper.Message{{
+	sent := []helper.Message{{
 		ID: "sent-" + strconv.Itoa(len(f.sent)), ConversationID: out.ConversationID, SenderID: fakeUserID, FromMe: true,
 		SentAt: helper.Time(fakeEpoch), Text: out.Text, ReplyToID: out.ReplyToID, Attachments: []helper.Attachment{}, Encrypted: conversation.Encrypted,
-	}}, nil
+	}}
+	if f.failAfterSend {
+		return sent, helper.Errorf(helper.CodeMetaRefused, "Messenger did not accept the second file.")
+	}
+	return sent, nil
 }
 
 func (f *fakeMeta) React(_ context.Context, r helper.OutgoingReaction) error {

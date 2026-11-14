@@ -1,6 +1,7 @@
 package helper
 
 import (
+	"cmp"
 	"context"
 	"io"
 	"mime"
@@ -73,7 +74,7 @@ func attachment(ctx context.Context, c *call) (any, error) {
 	if contentType == "" {
 		contentType = sniffType(file)
 	}
-	name := safeName(firstNonEmpty(p.Name, downloaded.Name), contentType)
+	name := safeName(cmp.Or(p.Name, downloaded.Name), contentType)
 	path := file.Name() + "-" + name
 	if err := os.Rename(file.Name(), path); err != nil {
 		return nil, Errorf(CodeFileProblem, "The helper could not write into its folder.")
@@ -86,15 +87,6 @@ func sniffType(file *os.File) string {
 	head := make([]byte, 512)
 	n, _ := file.ReadAt(head, 0)
 	return http.DetectContentType(head[:n])
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func safeName(name, contentType string) string {

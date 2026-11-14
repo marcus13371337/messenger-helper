@@ -37,12 +37,14 @@ type server struct {
 	loggingIn bool
 
 	inFlight sync.WaitGroup
+	lanes    *lanes
 }
 
 func Run(ctx context.Context, opts Options) error {
 	s := &server{
 		opts: opts,
-		out:  &lineWriter{out: opts.Out},
+		out:   &lineWriter{out: opts.Out},
+		lanes: newLanes(),
 		log:  zerolog.New(opts.Log).With().Timestamp().Logger(),
 	}
 	lines := make(chan readLine)
@@ -124,11 +126,16 @@ func (s *server) handleLine(ctx context.Context, l readLine) {
 		return
 	}
 	s.inFlight.Add(1)
-	go func() {
+	work := func() {
 		defer s.inFlight.Done()
 		result, err := handler.fn(ctx, c)
 		s.answer(req.ID, result, err)
-	}()
+	}
+	if handler.lane == nil {
+		go work()
+		return
+	}
+	s.lanes.run(handler.lane(req.Params), work)
 }
 
 func (s *server) answer(id json.RawMessage, result any, err error) {

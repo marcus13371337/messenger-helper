@@ -1,6 +1,9 @@
 package helper
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 const (
 	defaultConversationLimit = 20
@@ -59,7 +62,21 @@ func messages(ctx context.Context, c *call) (any, error) {
 }
 
 type sendResult struct {
-	Messages []Message `json:"messages"`
+	Messages []Message    `json:"messages"`
+	Problem  *sendProblem `json:"problem,omitempty"`
+}
+
+type sendProblem struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+func conversationLane(params json.RawMessage) string {
+	var target struct {
+		ConversationID string `json:"conversation_id"`
+	}
+	_ = json.Unmarshal(params, &target)
+	return target.ConversationID
 }
 
 func send(ctx context.Context, c *call) (any, error) {
@@ -81,10 +98,15 @@ func send(ctx context.Context, c *call) (any, error) {
 		out.Files[i].Path = resolved
 	}
 	sent, err := c.messenger.Send(ctx, out)
-	if err != nil {
+	if err != nil && len(sent) == 0 {
 		return nil, err
 	}
-	return sendResult{Messages: sent}, nil
+	result := sendResult{Messages: sent}
+	if err != nil {
+		plain := c.server.plain(err)
+		result.Problem = &sendProblem{Code: plain.Code, Message: plain.Message}
+	}
+	return result, nil
 }
 
 func react(ctx context.Context, c *call) (any, error) {

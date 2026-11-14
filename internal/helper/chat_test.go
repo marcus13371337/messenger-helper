@@ -127,7 +127,7 @@ func TestPingIsAnsweredWhileASendIsStillRunning(t *testing.T) {
 	a := startHelper(t)
 	a.meta.sendDelay = make(chan struct{})
 	a.login()
-	a.writeLine(`{"jsonrpc":"2.0","id":"slow","method":"send","params":{"conversation_id":"` + plainChatID + `","text":"x"}}`)
+	a.writeLine(`{"jsonrpc":"2.0","id":"slow","method":"send","params":{"conversation_id":"` + plainChatID + `","text":"slow"}}`)
 
 	a.ok("ping", nil)
 
@@ -261,5 +261,42 @@ func TestRestartWithTheStoredSessionConnectsAgain(t *testing.T) {
 		t.Fatalf("second run logged in with encryption %q", got)
 	}
 	for second.event("state")["state"] != "connected" {
+	}
+}
+
+func TestSendsToOneConversationReachMetaInTheOrderTheyWereWritten(t *testing.T) {
+	a := startHelper(t)
+	a.meta.sendDelay = make(chan struct{})
+	a.login()
+	a.writeLine(`{"jsonrpc":"2.0","id":"first","method":"send","params":{"conversation_id":"` + plainChatID + `","text":"slow"}}`)
+	a.writeLine(`{"jsonrpc":"2.0","id":"second","method":"send","params":{"conversation_id":"` + plainChatID + `","text":"fast"}}`)
+
+	a.ok("send", map[string]any{"conversation_id": encryptedChatID, "text": "other chat"})
+	close(a.meta.sendDelay)
+	for answered := 0; answered < 2; {
+		if l := a.read(); l.Method == "" {
+			answered++
+		}
+	}
+
+	var order []string
+	for _, sent := range a.meta.sent {
+		order = append(order, sent.Text)
+	}
+	if len(order) != 3 || order[0] != "other chat" || order[1] != "slow" || order[2] != "fast" {
+		t.Fatalf("Meta got %v", order)
+	}
+}
+
+func TestSendThatFailsHalfwayAnswersWhatWasSentAndTheProblem(t *testing.T) {
+	a := startHelper(t)
+	a.meta.failAfterSend = true
+	a.login()
+
+	got := a.ok("send", map[string]any{"conversation_id": encryptedChatID, "text": "two parts"})
+
+	problem := got["problem"].(map[string]any)
+	if len(got["messages"].([]any)) != 1 || problem["code"] != "meta_refused" || problem["message"] != "Messenger did not accept the second file." {
+		t.Fatalf("answer %v", got)
 	}
 }

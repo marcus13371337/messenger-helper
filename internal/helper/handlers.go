@@ -28,6 +28,7 @@ type handler struct {
 	fn         func(ctx context.Context, c *call) (any, error)
 	serial     bool
 	needsLogin bool
+	lane       func(params json.RawMessage) string
 }
 
 var handlers map[string]handler
@@ -42,7 +43,7 @@ func init() {
 
 		"conversations": {fn: conversations, needsLogin: true},
 		"messages":      {fn: messages, needsLogin: true},
-		"send":          {fn: send, needsLogin: true},
+		"send":          {fn: send, needsLogin: true, lane: conversationLane},
 		"react":         {fn: react, needsLogin: true},
 		"mark_read":     {fn: markRead, needsLogin: true},
 		"attachment":    {fn: attachment, needsLogin: true},

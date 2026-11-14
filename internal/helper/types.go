@@ -56,7 +56,7 @@ type Attachment struct {
 	Type string `json:"type,omitempty"`
 	Name string `json:"name,omitempty"`
 	Size int64  `json:"size,omitempty"`
-	Ref  string `json:"ref"`
+	Ref  string `json:"ref,omitempty"`
 }
 
 type Message struct {
