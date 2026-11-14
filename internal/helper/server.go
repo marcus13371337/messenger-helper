@@ -30,9 +30,11 @@ type server struct {
 	out  *lineWriter
 	log  zerolog.Logger
 
+	mu        sync.Mutex
 	greeted   bool
 	folder    string
 	messenger Messenger
+	loggingIn bool
 
 	inFlight sync.WaitGroup
 }
@@ -72,10 +74,17 @@ func (s *server) shutdown() error {
 	case <-waited:
 	case <-ctx.Done():
 	}
-	if s.messenger == nil {
+	_, _, messenger := s.snapshot()
+	if messenger == nil {
 		return nil
 	}
-	return s.messenger.Close(ctx)
+	return messenger.Close(ctx)
+}
+
+func (s *server) snapshot() (greeted bool, folder string, messenger Messenger) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.greeted, s.folder, s.messenger
 }
 
 func (s *server) handleLine(ctx context.Context, l readLine) {
@@ -99,33 +108,27 @@ func (s *server) handleLine(ctx context.Context, l readLine) {
 		s.answer(req.ID, nil, Errorf(CodeUnknownMethod, "The helper does not know the request %q.", req.Method))
 		return
 	}
-	if handler.serial {
-		s.run(ctx, handler, req)
-		return
-	}
-	messenger := s.messenger
-	s.inFlight.Add(1)
-	go func() {
-		defer s.inFlight.Done()
-		s.runWith(ctx, handler, req, messenger)
-	}()
-}
-
-func (s *server) run(ctx context.Context, h handler, req request) {
-	s.runWith(ctx, h, req, s.messenger)
-}
-
-func (s *server) runWith(ctx context.Context, h handler, req request, messenger Messenger) {
-	if !s.greeted && req.Method != "hello" {
+	greeted, folder, messenger := s.snapshot()
+	c := &call{server: s, messenger: messenger, folder: folder, params: req.Params}
+	if !greeted && req.Method != "hello" {
 		s.answer(req.ID, nil, Errorf(CodeHelloFirst, "Say hello before anything else."))
 		return
 	}
-	if h.needsLogin && messenger == nil {
+	if handler.needsLogin && messenger == nil {
 		s.answer(req.ID, nil, Errorf(CodeNotLoggedIn, "Nobody is logged in yet. Log in first."))
 		return
 	}
-	result, err := h.fn(ctx, &call{server: s, messenger: messenger, folder: s.folder, params: req.Params})
-	s.answer(req.ID, result, err)
+	if handler.serial {
+		result, err := handler.fn(ctx, c)
+		s.answer(req.ID, result, err)
+		return
+	}
+	s.inFlight.Add(1)
+	go func() {
+		defer s.inFlight.Done()
+		result, err := handler.fn(ctx, c)
+		s.answer(req.ID, result, err)
+	}()
 }
 
 func (s *server) answer(id json.RawMessage, result any, err error) {
@@ -208,4 +211,10 @@ func (s *server) loadState() (Session, bool) {
 		return Session{}, false
 	}
 	return saved.Session, true
+}
+
+func (s *server) forgetState() {
+	if err := os.Remove(s.statePath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		s.log.Error().Err(err).Msg("could not remove the saved session")
+	}
 }

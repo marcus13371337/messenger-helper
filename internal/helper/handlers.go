@@ -36,6 +36,16 @@ func init() {
 	handlers = map[string]handler{
 		"hello": {fn: hello, serial: true},
 		"ping":  {fn: ping, serial: true},
+
+		"login":  {fn: login},
+		"logout": {fn: logout, needsLogin: true},
+
+		"conversations": {fn: conversations, needsLogin: true},
+		"messages":      {fn: messages, needsLogin: true},
+		"send":          {fn: send, needsLogin: true},
+		"react":         {fn: react, needsLogin: true},
+		"mark_read":     {fn: markRead, needsLogin: true},
+		"attachment":    {fn: attachment, needsLogin: true},
 	}
 }
 
@@ -61,8 +71,10 @@ func hello(_ context.Context, c *call) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	c.server.mu.Lock()
 	c.server.folder = folder
 	c.server.greeted = true
+	c.server.mu.Unlock()
 	return helloResult{Protocol: ProtocolVersion, Version: c.server.opts.Version}, nil
 }
 

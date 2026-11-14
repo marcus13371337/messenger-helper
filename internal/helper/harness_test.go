@@ -30,7 +30,8 @@ type app struct {
 	t      *testing.T
 	stdin  *io.PipeWriter
 	lines  chan line
-	done   chan error
+	done   chan struct{}
+	err    error
 	nextID int
 	events []line
 	meta   *fakeMeta
@@ -43,15 +44,15 @@ func startHelper(t *testing.T, opts ...option) *app {
 	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
-	a := &app{t: t, stdin: inW, lines: make(chan line, 256), done: make(chan error, 1), meta: newFakeMeta(), folder: t.TempDir()}
+	a := &app{t: t, stdin: inW, lines: make(chan line, 256), done: make(chan struct{}), meta: newFakeMeta(), folder: t.TempDir()}
 	options := helper.Options{In: inR, Out: outW, Log: io.Discard, Version: "test", Connect: a.meta.connect}
 	for _, opt := range opts {
 		opt(&options)
 	}
 	go func() {
-		err := helper.Run(context.Background(), options)
+		a.err = helper.Run(context.Background(), options)
 		outW.Close()
-		a.done <- err
+		close(a.done)
 	}()
 	go func() {
 		scanner := bufio.NewScanner(outR)
@@ -66,7 +67,10 @@ func startHelper(t *testing.T, opts ...option) *app {
 		}
 		close(a.lines)
 	}()
-	t.Cleanup(func() { inW.Close() })
+	t.Cleanup(func() {
+		inW.Close()
+		a.waitExit()
+	})
 	return a
 }
 
@@ -162,6 +166,22 @@ func (a *app) event(method string) map[string]any {
 	}
 }
 
+func (a *app) eventOrEnd(method string) map[string]any {
+	a.t.Helper()
+	for i, l := range a.events {
+		if l.Method == method {
+			a.events = append(a.events[:i], a.events[i+1:]...)
+			return params(a.t, l)
+		}
+	}
+	for l := range a.lines {
+		if l.Method == method {
+			return params(a.t, l)
+		}
+	}
+	return nil
+}
+
 func params(t *testing.T, l line) map[string]any {
 	t.Helper()
 	if len(l.ID) != 0 {
@@ -179,11 +199,17 @@ func (a *app) hello() map[string]any {
 	return a.ok("hello", map[string]any{"protocol": 1, "folder": a.folder})
 }
 
+func (a *app) login() map[string]any {
+	a.t.Helper()
+	a.hello()
+	return a.ok("login", map[string]any{"session": validSession()})
+}
+
 func (a *app) waitExit() error {
 	a.t.Helper()
 	select {
-	case err := <-a.done:
-		return err
+	case <-a.done:
+		return a.err
 	case <-time.After(5 * time.Second):
 		a.t.Fatal("helper did not exit")
 	}
