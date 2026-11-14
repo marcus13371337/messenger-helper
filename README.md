@@ -10,6 +10,7 @@ It was made for [Empty](https://empty.rcusahlberg.se), where a person's own buil
 
 - The app downloads a release for its platform, checks its checksum, and starts it as a child process.
 - They exchange one JSON-RPC message per line, described in [PROTOCOL.md](PROTOCOL.md): the app sends requests (log in, list conversations, read history, send, fetch attachments) and the helper answers them and pushes new events (messages, reactions, read receipts, typing).
+- The person signs in at facebook.com in a window the app opens, and the app hands the helper that window's cookies. messenger.com is closing, so the helper only speaks to facebook.com.
 - The helper keeps the connection to Meta alive, reconnects on its own, and reads end-to-end encrypted chats.
 - The helper keeps no login on disk unless the app asks: the app gives it the session and stores the refreshed one it hands back, so secrets can live in the OS keychain.
 
@@ -27,7 +28,7 @@ Each [release](https://github.com/marcus13371337/messenger-helper/releases) is n
 An app pins a version and the checksum of its platform's file, downloads it, refuses it when the SHA-256 differs, makes it executable and starts it. By hand:
 
 ```
-version=v0.1.0
+version=v0.2.0
 platform=darwin-arm64
 base=https://github.com/marcus13371337/messenger-helper/releases/download/$version
 curl -fLO "$base/messenger-helper-$platform"
@@ -37,7 +38,7 @@ chmod +x "messenger-helper-$platform"
 "./messenger-helper-$platform" --version
 ```
 
-`--version` prints the helper's version and the protocol version it speaks, for example `messenger-helper 0.1.0 (protocol 1)`.
+`--version` prints the helper's version and the protocol version it speaks, for example `messenger-helper 0.2.0 (protocol 1)`.
 
 The programs are not signed. macOS does not stop a program that an app or `curl` downloaded, but it quarantines one downloaded in a browser; `xattr -d com.apple.quarantine messenger-helper-darwin-arm64` lifts that.
 

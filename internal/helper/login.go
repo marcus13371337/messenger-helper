@@ -40,7 +40,7 @@ func (s *server) sessionFor(p loginParams) (Session, error) {
 	if saved, ok := s.loadState(); ok {
 		return saved, nil
 	}
-	return Session{}, Errorf(CodeBadSession, "The login needs the cookies from a signed-in Messenger browser session.")
+	return Session{}, Errorf(CodeBadSession, "The login needs the cookies from a signed-in facebook.com browser session.")
 }
 
 func (s *server) beginLogin() error {

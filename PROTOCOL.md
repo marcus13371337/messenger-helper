@@ -184,18 +184,17 @@ Not in version 1: edits, deleted messages, polls, calls, starting a new conversa
 ## Session
 
 ```json
-{"platform":"messenger","cookies":{"c_user":"…","xs":"…","datr":"…"},"encryption":"…"}
+{"cookies":{"c_user":"…","xs":"…","datr":"…"},"encryption":"…"}
 ```
 
-- `platform`: `messenger` (cookies from messenger.com, the default) or `facebook` (cookies from facebook.com).
-- `cookies`: every cookie of the signed-in browser session, name to value. `c_user`, `xs` and `datr` are required.
+- `cookies`: every cookie of the signed-in facebook.com browser session, name to value. `c_user`, `xs` and `datr` are required.
 - `encryption`: opaque text holding the keys of the helper's encrypted-chat device. Absent at the first login. It changes with nearly every encrypted message and can grow to a few megabytes.
 
-The whole session is a secret equal to the person's Messenger login. Hand it to the helper only in `login`. The helper sends a new `session` at most every five seconds while things change, and once more as it exits. Losing the newest one means some encrypted messages may fail to decrypt until the keys settle again, so store each one as it arrives.
+The whole session is a secret equal to the person's whole Facebook login. Hand it to the helper only in `login`. The helper sends a new `session` at most every five seconds while things change, and once more as it exits. Losing the newest one means some encrypted messages may fail to decrypt until the keys settle again, so store each one as it arrives.
 
 ## Getting the cookies
 
-The helper never sees a password. The app opens a browser window it controls at `https://www.messenger.com/`, lets the person sign in there, including any two-factor step, and waits until the `c_user` and `xs` cookies exist. It then reads all cookies for that site from the window's cookie store, closes the window, and passes them in `login`. If Meta later reports `bad_session` or `logged_out`, the app repeats this.
+The helper never sees a password. The app opens a browser window it controls at `https://www.facebook.com/`, lets the person sign in there, including any two-factor step, and waits until the `c_user` and `xs` cookies exist and the window is back on facebook.com's home or messages page, matching `^https://www\.facebook\.com/(?:messages/(?:e2ee/)?(?:t/[0-9]+/?)?)?(?:\?.*)?$`, so a two-factor or checkpoint page is finished first. It then reads all facebook.com cookies from the window's cookie store, closes the window, and passes them in `login`. If Meta later reports `bad_session` or `logged_out`, the app repeats this.
 
 ## What the PIN is for
 

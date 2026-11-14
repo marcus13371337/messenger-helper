@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,20 +35,20 @@ const (
 )
 
 var (
-	errBadSession  = helper.Errorf(helper.CodeBadSession, "Messenger no longer accepts this login. Sign in to Messenger in the browser again.")
-	errNeedsPerson = helper.Errorf(helper.CodeNeedsPerson, "Messenger wants the person to confirm something. Open Messenger in a browser, finish what it asks, then log in again.")
+	errBadSession  = helper.Errorf(helper.CodeBadSession, "Messenger no longer accepts this login. Sign in at facebook.com in the browser again.")
+	errNeedsPerson = helper.Errorf(helper.CodeNeedsPerson, "Messenger wants the person to confirm something. Open facebook.com in a browser, finish what it asks, then log in again.")
 	errUnreachable = helper.Errorf(helper.CodeNotConnected, "Messenger could not be reached. Check the internet connection and try again.")
 )
 
 type Client struct {
-	log      zerolog.Logger
-	emit     func(helper.Event)
-	cookies  *cookies.Cookies
-	platform string
-	keys     *keyStore
-	dir      *directory
-	self     helper.User
-	selfID   int64
+	log       zerolog.Logger
+	emit      func(helper.Event)
+	cookies   *cookies.Cookies
+	downloads *http.Client
+	keys      *keyStore
+	dir       *directory
+	self      helper.User
+	selfID    int64
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -83,36 +84,29 @@ func Connector(logOut io.Writer) helper.Connect {
 	}
 }
 
-func platformOf(session helper.Session) (types.Platform, error) {
-	switch session.Platform {
-	case "", "messenger":
-		return types.Messenger, nil
-	case "facebook":
-		return types.Facebook, nil
-	default:
-		return types.Unset, helper.Errorf(helper.CodeBadSession, "The login's platform must be messenger or facebook.")
-	}
-}
-
-func connect(ctx context.Context, logOut io.Writer, session helper.Session, emit func(helper.Event)) (*Client, error) {
-	platform, err := platformOf(session)
-	if err != nil {
-		return nil, err
-	}
-	jar := &cookies.Cookies{Platform: platform}
+func cookieJar(session helper.Session) (*cookies.Cookies, error) {
+	jar := &cookies.Cookies{Platform: types.Facebook}
 	values := make(map[cookies.MetaCookieName]string, len(session.Cookies))
 	for name, value := range session.Cookies {
 		values[cookies.MetaCookieName(name)] = value
 	}
 	jar.UpdateValues(values)
 	if missing := jar.GetMissingCookieNames(); len(missing) > 0 {
-		return nil, helper.Errorf(helper.CodeBadSession, "The login is missing the cookie %q from the Messenger browser session.", missing[0])
+		return nil, helper.Errorf(helper.CodeBadSession, "The login is missing the cookie %q from the facebook.com browser session.", missing[0])
+	}
+	return jar, nil
+}
+
+func connect(ctx context.Context, logOut io.Writer, session helper.Session, emit func(helper.Event)) (*Client, error) {
+	jar, err := cookieJar(session)
+	if err != nil {
+		return nil, err
 	}
 
 	c := &Client{
 		emit:         emit,
 		cookies:      jar,
-		platform:     platform.String(),
+		downloads:    http.DefaultClient,
 		unread:       map[waTypes.JID]map[waTypes.JID][]waTypes.MessageID{},
 		historyLocks: map[int64]*sync.Mutex{},
 		metaReady:    make(chan struct{}),
@@ -344,7 +338,7 @@ func (c *Client) session() (helper.Session, error) {
 	for name, value := range all {
 		values[string(name)] = value
 	}
-	return helper.Session{Platform: c.platform, Cookies: values, Encryption: encryption}, nil
+	return helper.Session{Cookies: values, Encryption: encryption}, nil
 }
 
 func (c *Client) emitSession(always bool) {

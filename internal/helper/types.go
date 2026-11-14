@@ -24,7 +24,6 @@ func (t *Time) UnmarshalJSON(data []byte) error {
 }
 
 type Session struct {
-	Platform   string            `json:"platform,omitempty"`
 	Cookies    map[string]string `json:"cookies"`
 	Encryption string            `json:"encryption,omitempty"`
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/marcus13371337/messenger-helper/internal/helper"
@@ -11,7 +13,7 @@ import (
 
 func TestAttachmentsAreOnlyFetchedFromMetasOwnServers(t *testing.T) {
 	allowed := []string{"https://scontent.xx.fbcdn.net/v/cat.jpg?oh=1", "https://cdn.fbsbx.com/file.pdf"}
-	refused := []string{"http://scontent.xx.fbcdn.net/cat.jpg", "https://evilfbcdn.net/cat.jpg", "https://example.test/fbcdn.net", "file:///etc/passwd", ""}
+	refused := []string{"http://scontent.xx.fbcdn.net/cat.jpg", "https://evilfbcdn.net/cat.jpg", "https://www.messenger.com/cat.jpg", "https://example.test/fbcdn.net", "file:///etc/passwd", ""}
 
 	for _, url := range allowed {
 		if err := checkDownloadURL(url); err != nil {
@@ -59,18 +61,30 @@ func TestLoginIsRefusedBeforeTouchingTheNetworkWhenCookiesAreMissing(t *testing.
 	}
 }
 
-func TestLoginIsRefusedForAnUnknownPlatform(t *testing.T) {
-	session := helper.Session{Platform: "instagram", Cookies: map[string]string{"c_user": "100001", "xs": "x", "datr": "d"}}
-
-	if code := loginCode(t, session); code != helper.CodeBadSession {
-		t.Fatalf("code %q", code)
-	}
-}
-
 func TestAttachmentRefThatIsNotOursIsRefused(t *testing.T) {
 	for _, ref := range []string{"not-base64!", "e30", ""} {
 		if _, err := decodeRef(ref); err == nil {
 			t.Fatalf("ref %q accepted", ref)
 		}
+	}
+}
+
+type recordingTransport struct{ referer string }
+
+func (r *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	r.referer = req.Header.Get("Referer")
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("cat")), Header: http.Header{}, Request: req}, nil
+}
+
+func TestAttachmentsAreFetchedAsFacebook(t *testing.T) {
+	transport := &recordingTransport{}
+	ref := attachmentRef{URL: "https://scontent.xx.fbcdn.net/v/cat.jpg", Type: "image/jpeg"}.encode()
+
+	if _, err := (&Client{downloads: &http.Client{Transport: transport}}).Download(context.Background(), ref, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	if transport.referer != "https://www.facebook.com/" {
+		t.Fatalf("referer %q", transport.referer)
 	}
 }
