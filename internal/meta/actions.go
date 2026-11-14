@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"go.mau.fi/mautrix-meta/pkg/messagix"
@@ -122,8 +123,9 @@ func (c *Client) Messages(ctx context.Context, q helper.MessagesQuery) (helper.M
 		}
 		before = &parsed
 	}
-	c.historyMu.Lock()
-	defer c.historyMu.Unlock()
+	oneAtATime := c.historyLock(t.key)
+	oneAtATime.Lock()
+	defer oneAtATime.Unlock()
 
 	collected, olderExist := c.dir.recentBefore(t.key, before)
 	reference := cursor{TimestampMs: time.Now().UnixMilli()}
@@ -147,6 +149,17 @@ func (c *Client) Messages(ctx context.Context, q helper.MessagesQuery) (helper.M
 		page.Next = messageCursor(page.Messages[0]).String()
 	}
 	return page, nil
+}
+
+func (c *Client) historyLock(key int64) *sync.Mutex {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	lock, ok := c.historyLocks[key]
+	if !ok {
+		lock = &sync.Mutex{}
+		c.historyLocks[key] = lock
+	}
+	return lock
 }
 
 func fetchReference(position cursor) cursor {
@@ -292,7 +305,10 @@ func checkDownloadURL(raw string) error {
 	return helper.Errorf(helper.CodeBadRequest, "That attachment ref did not come from a message.")
 }
 
-var errAttachmentGone = helper.Errorf(helper.CodeNotAvailable, "This attachment's link has run out. Fetch the conversation's messages again to get a fresh one.")
+var (
+	errLinkRanOut     = helper.Errorf(helper.CodeNotAvailable, "This attachment's link has run out. Ask for the conversation's messages again; the newest ones are renewed the next time the helper connects.")
+	errAttachmentGone = helper.Errorf(helper.CodeNotAvailable, "Messenger no longer has this attachment.")
+)
 
 func (c *Client) Download(ctx context.Context, ref string, into io.Writer) (helper.Downloaded, error) {
 	parsed, err := decodeRef(ref)
@@ -334,7 +350,7 @@ func (c *Client) Download(ctx context.Context, ref string, into io.Writer) (help
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return helper.Downloaded{}, errAttachmentGone
+		return helper.Downloaded{}, errLinkRanOut
 	}
 	if described.Type == "" {
 		described.Type = resp.Header.Get("Content-Type")

@@ -198,3 +198,16 @@ func TestLogsNeverCarryCookiesKeysOrMessageText(t *testing.T) {
 		}
 	}
 }
+
+func TestWhenMetaEndsTheLoginTheAppCanLogInAgain(t *testing.T) {
+	a := startHelper(t)
+	a.login()
+
+	a.meta.push(helper.StateEvent(helper.State{State: helper.StateLoggedOut, Code: helper.CodeBadSession, Message: "Messenger no longer accepts this login."}))
+
+	for a.event("state")["state"] != "logged_out" {
+	}
+	a.fails("conversations", nil, "not_logged_in")
+	a.ok("login", map[string]any{"session": validSession()})
+	a.ok("conversations", nil)
+}

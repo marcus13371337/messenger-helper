@@ -153,7 +153,7 @@ In an encrypted chat this confirms the messages the helper received since it sta
 - Params: `ref` (from a message's attachment), `name` (optional file name to use).
 - Result: `path` (absolute, inside the helper's folder), `name`, `size` (bytes), `type` (media type).
 
-The helper downloads the attachment, decrypting it when needed, into a new file in its folder. The app moves or deletes the file when done. Links of unencrypted attachments run out after a while; the answer is then `not_available`. Older pages of `messages` always carry a fresh `ref`. The newest page gets fresh ones when the helper connects again.
+The helper downloads the attachment, decrypting it when needed, into a new file in its folder. The app moves or deletes the file when done. Links of unencrypted attachments run out after a while; the answer is then `not_available`. Older pages of `messages` always carry a fresh `ref`. The newest page gets fresh ones the next time the helper connects.
 
 ## Events
 
@@ -176,6 +176,8 @@ States:
 | `reconnecting` | The connection dropped; the helper is retrying on its own. |
 | `logged_out` | Meta ended the login, or `logout` finished. A new `login` with fresh cookies is needed. |
 | `needs_person` | Meta asks the person for something, such as a security check. They finish it in a browser, then the app logs in again. |
+
+`logged_out` and `needs_person` are final for that login: the helper stops retrying, sends one last `session`, and answers `not_logged_in` until the next `login`.
 
 Not in version 1: edits, deleted messages, polls, calls, starting a new conversation, and typing or presence from the helper's side.
 

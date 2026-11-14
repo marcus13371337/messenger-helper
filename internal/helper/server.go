@@ -173,6 +173,9 @@ func (s *server) emit(evt Event) {
 	if evt.Method == "session" {
 		s.saveState(evt)
 	}
+	if state, ok := evt.Params.(State); ok && (state.State == StateLoggedOut || state.State == StateNeedsPerson) {
+		defer s.dropEndedLogin()
+	}
 	err := s.out.write(notification{JSONRPC: "2.0", Method: evt.Method, Params: evt.Params})
 	if errors.Is(err, errLineTooLong) && evt.Method == "session" {
 		err = s.out.write(notification{JSONRPC: "2.0", Method: "state", Params: State{
@@ -224,4 +227,23 @@ func (s *server) forgetState() {
 	if err := os.Remove(s.statePath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		s.log.Error().Err(err).Msg("could not remove the saved session")
 	}
+}
+
+func (s *server) dropEndedLogin() {
+	s.mu.Lock()
+	ended := s.messenger
+	s.messenger = nil
+	s.mu.Unlock()
+	if ended == nil {
+		return
+	}
+	s.inFlight.Add(1)
+	go func() {
+		defer s.inFlight.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+		defer cancel()
+		if err := ended.Close(ctx); err != nil {
+			s.log.Error().Err(err).Msg("could not close the ended login")
+		}
+	}()
 }

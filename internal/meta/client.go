@@ -52,24 +52,25 @@ type Client struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu           sync.Mutex
-	fb           *messagix.Client
-	wa           *whatsmeow.Client
-	device       *store.Device
-	conn         connection
-	published    helper.State
-	encrypting   bool
-	restarting   bool
-	stopped      bool
-	restarts     int
-	lastRestart  time.Time
-	lastSession  [sha256.Size]byte
-	unread       map[waTypes.JID]map[waTypes.JID][]waTypes.MessageID
-	metaReady    chan struct{}
-	waReady      chan struct{}
-	historyMu    sync.Mutex
-	sessionDirty atomic.Bool
-	background   sync.WaitGroup
+	mu                sync.Mutex
+	fb                *messagix.Client
+	wa                *whatsmeow.Client
+	device            *store.Device
+	conn              connection
+	published         helper.State
+	encryptionRun     int
+	lastEncryptionRun int
+	restarting        bool
+	stopped           bool
+	restarts          int
+	lastRestart       time.Time
+	lastSession       [sha256.Size]byte
+	unread            map[waTypes.JID]map[waTypes.JID][]waTypes.MessageID
+	metaReady         chan struct{}
+	waReady           chan struct{}
+	historyLocks      map[int64]*sync.Mutex
+	sessionDirty      atomic.Bool
+	background        sync.WaitGroup
 }
 
 func Connector(logOut io.Writer) helper.Connect {
@@ -109,12 +110,13 @@ func connect(ctx context.Context, logOut io.Writer, session helper.Session, emit
 	}
 
 	c := &Client{
-		emit:      emit,
-		cookies:   jar,
-		platform:  platform.String(),
-		unread:    map[waTypes.JID]map[waTypes.JID][]waTypes.MessageID{},
-		metaReady: make(chan struct{}),
-		waReady:   make(chan struct{}),
+		emit:         emit,
+		cookies:      jar,
+		platform:     platform.String(),
+		unread:       map[waTypes.JID]map[waTypes.JID][]waTypes.MessageID{},
+		historyLocks: map[int64]*sync.Mutex{},
+		metaReady:    make(chan struct{}),
+		waReady:      make(chan struct{}),
 	}
 	c.log = zerolog.New(newQuietLog(logOut, c.secrets)).Level(zerolog.InfoLevel).With().Timestamp().Logger()
 	c.ctx, c.cancel = context.WithCancel(context.Background())
@@ -303,7 +305,7 @@ func (c *Client) restart() {
 func (c *Client) teardown() {
 	c.mu.Lock()
 	fb, wa := c.fb, c.wa
-	c.fb, c.wa, c.encrypting = nil, nil, false
+	c.fb, c.wa, c.encryptionRun = nil, nil, 0
 	c.metaReady, c.waReady = make(chan struct{}), make(chan struct{})
 	c.mu.Unlock()
 	if fb != nil {

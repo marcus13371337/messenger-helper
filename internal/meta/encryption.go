@@ -17,17 +17,21 @@ const (
 )
 
 func (c *Client) spawnEncryption(fb *messagix.Client, registerAgain bool) {
-	if c.encrypting || c.stopped || fb == nil {
+	if c.encryptionRun != 0 || c.stopped || fb == nil {
 		return
 	}
-	c.encrypting = true
+	c.lastEncryptionRun++
+	run := c.lastEncryptionRun
+	c.encryptionRun = run
 	previous, device := c.wa, c.device
 	c.wa = nil
 	c.waReady = make(chan struct{})
 	c.background.Go(func() {
 		defer func() {
 			c.mu.Lock()
-			c.encrypting = false
+			if c.encryptionRun == run {
+				c.encryptionRun = 0
+			}
 			c.mu.Unlock()
 		}()
 		if previous != nil {
@@ -38,13 +42,19 @@ func (c *Client) spawnEncryption(fb *messagix.Client, registerAgain bool) {
 				c.log.Error().Err(err).Msg("Could not delete the encryption device")
 			}
 		}
-		c.connectEncryption(fb)
+		c.connectEncryption(fb, run)
 	})
 }
 
-func (c *Client) connectEncryption(fb *messagix.Client) {
+func (c *Client) ownsEncryption(run int) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.encryptionRun == run
+}
+
+func (c *Client) connectEncryption(fb *messagix.Client, run int) {
 	retryIn := firstEncryptionRetry
-	for {
+	for c.ownsEncryption(run) {
 		err := c.startEncryption(fb)
 		if err == nil {
 			return
