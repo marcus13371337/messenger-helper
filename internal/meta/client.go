@@ -390,10 +390,11 @@ func (c *Client) Close(context.Context) error {
 	if already {
 		return nil
 	}
+	c.emitSession(true)
 	c.cancel()
 	c.teardown()
 	c.background.Wait()
-	c.emitSession(true)
+	c.emitSession(false)
 	c.keys.close()
 	return nil
 }
