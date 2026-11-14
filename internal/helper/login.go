@@ -23,12 +23,13 @@ func login(ctx context.Context, c *call) (any, error) {
 	if err := s.beginLogin(); err != nil {
 		return nil, err
 	}
-	messenger, err := s.opts.Connect(ctx, session, s.emit)
+	run := &loginRun{}
+	messenger, err := s.opts.Connect(ctx, session, s.emitterFor(run))
 	if err != nil {
-		s.endLogin(nil)
+		s.endLogin(nil, nil)
 		return nil, err
 	}
-	s.endLogin(messenger)
+	s.endLogin(messenger, run)
 	return loginResult{User: messenger.Self()}, nil
 }
 
@@ -52,11 +53,11 @@ func (s *server) beginLogin() error {
 	return nil
 }
 
-func (s *server) endLogin(messenger Messenger) {
+func (s *server) endLogin(messenger Messenger, run *loginRun) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.loggingIn = false
-	s.messenger = messenger
+	s.messenger, s.run = messenger, run
 }
 
 func logout(ctx context.Context, c *call) (any, error) {
@@ -64,7 +65,7 @@ func logout(ctx context.Context, c *call) (any, error) {
 	s.mu.Lock()
 	current := s.messenger == c.messenger
 	if current {
-		s.messenger = nil
+		s.messenger, s.run = nil, nil
 	}
 	s.mu.Unlock()
 	if !current {

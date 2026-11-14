@@ -25,6 +25,8 @@ type Options struct {
 
 const shutdownGrace = 3 * time.Second
 
+type loginRun struct{}
+
 type server struct {
 	opts Options
 	out  *lineWriter
@@ -34,6 +36,7 @@ type server struct {
 	greeted   bool
 	folder    string
 	messenger Messenger
+	run       *loginRun
 	loggingIn bool
 
 	inFlight sync.WaitGroup
@@ -173,9 +176,6 @@ func (s *server) emit(evt Event) {
 	if evt.Method == "session" {
 		s.saveState(evt)
 	}
-	if state, ok := evt.Params.(State); ok && (state.State == StateLoggedOut || state.State == StateNeedsPerson) {
-		defer s.dropEndedLogin()
-	}
 	err := s.out.write(notification{JSONRPC: "2.0", Method: evt.Method, Params: evt.Params})
 	if errors.Is(err, errLineTooLong) && evt.Method == "session" {
 		err = s.out.write(notification{JSONRPC: "2.0", Method: "state", Params: State{
@@ -229,12 +229,24 @@ func (s *server) forgetState() {
 	}
 }
 
-func (s *server) dropEndedLogin() {
+func (s *server) emitterFor(run *loginRun) func(Event) {
+	return func(evt Event) {
+		s.emit(evt)
+		if state, ok := evt.Params.(State); ok && (state.State == StateLoggedOut || state.State == StateNeedsPerson) {
+			s.dropEndedLogin(run)
+		}
+	}
+}
+
+func (s *server) dropEndedLogin(run *loginRun) {
 	s.mu.Lock()
 	ended := s.messenger
-	s.messenger = nil
+	current := s.run == run && ended != nil
+	if current {
+		s.messenger, s.run = nil, nil
+	}
 	s.mu.Unlock()
-	if ended == nil {
+	if !current {
 		return
 	}
 	s.inFlight.Add(1)
