@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"strings"
 	"testing"
 
 	"go.mau.fi/mautrix-meta/pkg/messagix/types"
@@ -77,5 +79,28 @@ func TestAttachmentRefThatIsNotOursIsRefused(t *testing.T) {
 		if _, err := decodeRef(ref); err == nil {
 			t.Fatalf("ref %q accepted", ref)
 		}
+	}
+}
+
+type recordingTransport struct{ referer string }
+
+func (r *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	r.referer = req.Header.Get("Referer")
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("cat")), Header: http.Header{}, Request: req}, nil
+}
+
+func TestAttachmentsAreFetchedAsFacebook(t *testing.T) {
+	transport := &recordingTransport{}
+	original := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: transport}
+	t.Cleanup(func() { http.DefaultClient = original })
+	ref := attachmentRef{URL: "https://scontent.xx.fbcdn.net/v/cat.jpg", Type: "image/jpeg"}.encode()
+
+	if _, err := (&Client{}).Download(context.Background(), ref, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	if transport.referer != "https://www.facebook.com/" {
+		t.Fatalf("referer %q", transport.referer)
 	}
 }
