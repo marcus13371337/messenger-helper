@@ -71,8 +71,8 @@ Then merge, and release from `main` with the next patch version:
 
 ```
 git switch main && git pull
-git tag v0.1.1
-git push origin v0.1.1
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
 ## Licence
