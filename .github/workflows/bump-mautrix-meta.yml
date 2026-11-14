@@ -1,0 +1,72 @@
+name: bump mautrix-meta
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency: bump-mautrix-meta
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: auto
+      BRANCH: bump/mautrix-meta
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - id: bump
+        run: |
+          version="$(scripts/bump-mautrix-meta.sh)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git diff --quiet; then echo changed=false; else echo changed=true; fi >> "$GITHUB_OUTPUT"
+      - id: check
+        if: steps.bump.outputs.changed == 'true'
+        continue-on-error: true
+        run: scripts/check.sh
+      - if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.bump.outputs.version }}
+          PASSED: ${{ steps.check.outcome == 'success' }}
+          BASE: ${{ github.event.repository.default_branch }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git commit -am "chore: bump mautrix-meta to $VERSION"
+          git push --force origin "$BRANCH"
+
+          title="chore: bump mautrix-meta to $VERSION"
+          if [ "$PASSED" = true ]; then
+            result="The build and tests passed in [the bump run]($RUN_URL)."
+          else
+            result="**The build or tests failed** in [the bump run]($RUN_URL). This draft needs a fix before it can merge."
+          fi
+          body="Bumps [mautrix-meta](https://github.com/mautrix/meta/releases/tag/$VERSION) to $VERSION and copies its \`replace\` lines.
+
+          $result
+
+          Before merging, try it against the real Meta and cut a release as \"Following mautrix-meta\" in the README describes."
+
+          pr="$(gh pr list --head "$BRANCH" --state open --json number,isDraft --jq '.[0] // empty | "\(.number) \(.isDraft)"')"
+          if [ -z "$pr" ]; then
+            draft=()
+            [ "$PASSED" = true ] || draft=(--draft)
+            gh pr create --base "$BASE" --head "$BRANCH" --title "$title" --body "$body" "${draft[@]}"
+          else
+            read -r number is_draft <<< "$pr"
+            gh pr edit "$number" --title "$title" --body "$body"
+            if [ "$PASSED" = true ] && [ "$is_draft" = true ]; then gh pr ready "$number"; fi
+            if [ "$PASSED" != true ] && [ "$is_draft" = false ]; then gh pr ready --undo "$number"; fi
+          fi
+      - if: steps.check.outcome == 'failure'
+        run: exit 1
