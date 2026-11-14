@@ -59,7 +59,7 @@ func messages(ctx context.Context, c *call) (any, error) {
 }
 
 type sendResult struct {
-	Message Message `json:"message"`
+	Messages []Message `json:"messages"`
 }
 
 func send(ctx context.Context, c *call) (any, error) {
@@ -80,11 +80,11 @@ func send(ctx context.Context, c *call) (any, error) {
 		}
 		out.Files[i].Path = resolved
 	}
-	message, err := c.messenger.Send(ctx, out)
+	sent, err := c.messenger.Send(ctx, out)
 	if err != nil {
 		return nil, err
 	}
-	return sendResult{Message: message}, nil
+	return sendResult{Messages: sent}, nil
 }
 
 func react(ctx context.Context, c *call) (any, error) {

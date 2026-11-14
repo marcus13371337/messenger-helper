@@ -24,6 +24,7 @@ func (t *Time) UnmarshalJSON(data []byte) error {
 }
 
 type Session struct {
+	Platform   string            `json:"platform,omitempty"`
 	Cookies    map[string]string `json:"cookies"`
 	Encryption string            `json:"encryption,omitempty"`
 }
@@ -69,6 +70,7 @@ type Message struct {
 	Attachments    []Attachment `json:"attachments"`
 	Reactions      []Reacted    `json:"reactions,omitempty"`
 	Encrypted      bool         `json:"encrypted"`
+	Unsupported    bool         `json:"unsupported,omitempty"`
 }
 
 type Reacted struct {
@@ -180,7 +182,7 @@ type Messenger interface {
 	Self() User
 	Conversations(ctx context.Context, q ConversationsQuery) (ConversationPage, error)
 	Messages(ctx context.Context, q MessagesQuery) (MessagePage, error)
-	Send(ctx context.Context, out Outgoing) (Message, error)
+	Send(ctx context.Context, out Outgoing) ([]Message, error)
 	React(ctx context.Context, r OutgoingReaction) error
 	MarkRead(ctx context.Context, r ReadMark) error
 	Download(ctx context.Context, ref string, into io.Writer) (Downloaded, error)

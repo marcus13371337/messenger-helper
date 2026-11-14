@@ -146,7 +146,7 @@ func (f *fakeMeta) Messages(_ context.Context, q helper.MessagesQuery) (helper.M
 	return page, nil
 }
 
-func (f *fakeMeta) Send(ctx context.Context, out helper.Outgoing) (helper.Message, error) {
+func (f *fakeMeta) Send(ctx context.Context, out helper.Outgoing) ([]helper.Message, error) {
 	if f.sendDelay != nil {
 		<-f.sendDelay
 	}
@@ -154,20 +154,20 @@ func (f *fakeMeta) Send(ctx context.Context, out helper.Outgoing) (helper.Messag
 	defer f.mu.Unlock()
 	conversation, err := f.conversation(out.ConversationID)
 	if err != nil {
-		return helper.Message{}, err
+		return nil, err
 	}
 	for _, file := range out.Files {
 		content, err := os.ReadFile(file.Path)
 		if err != nil {
-			return helper.Message{}, err
+			return nil, err
 		}
 		f.sentFiles[file.Path] = content
 	}
 	f.sent = append(f.sent, out)
-	return helper.Message{
+	return []helper.Message{{
 		ID: "sent-" + strconv.Itoa(len(f.sent)), ConversationID: out.ConversationID, SenderID: fakeUserID, FromMe: true,
 		SentAt: helper.Time(fakeEpoch), Text: out.Text, ReplyToID: out.ReplyToID, Attachments: []helper.Attachment{}, Encrypted: conversation.Encrypted,
-	}, nil
+	}}, nil
 }
 
 func (f *fakeMeta) React(_ context.Context, r helper.OutgoingReaction) error {

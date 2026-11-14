@@ -74,7 +74,7 @@ func TestSendDeliversTextAsAReplyAndAnswersTheSentMessage(t *testing.T) {
 
 	got := a.ok("send", map[string]any{"conversation_id": encryptedChatID, "text": "hi Ada", "reply_to_id": "m1"})
 
-	message := got["message"].(map[string]any)
+	message := got["messages"].([]any)[0].(map[string]any)
 	if message["id"] != "sent-1" || message["from_me"] != true || message["encrypted"] != true || message["reply_to_id"] != "m1" {
 		t.Fatalf("answer %v", message)
 	}
