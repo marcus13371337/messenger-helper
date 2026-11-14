@@ -7,7 +7,7 @@ import (
 	"sync"
 )
 
-var loggedFields = []string{"level", "time", "message", "component", "socket", "error"}
+var loggedFields = []string{"level", "time", "message", "component", "socket", "error", "reason", "failed_messages", "failed_tasks"}
 
 type quietLog struct {
 	mu      sync.Mutex

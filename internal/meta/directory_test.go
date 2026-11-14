@@ -1,6 +1,7 @@
 package meta
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -125,7 +126,7 @@ func history(ids ...string) *table.LSTable {
 	return tbl
 }
 
-func TestHistoryIsRememberedWithoutMessageEvents(t *testing.T) {
+func TestSyncedMessagesAreKeptAsTheRecentWindowWithoutMessageEvents(t *testing.T) {
 	d, _ := syncedDirectory()
 	tbl := history("mid.$a", "mid.$b", "mid.$c")
 	tbl.LSUpsertReaction = []*table.LSUpsertReaction{{ThreadKey: group, MessageId: "mid.$b", ActorId: grace, Reaction: "👍"}}
@@ -135,20 +136,96 @@ func TestHistoryIsRememberedWithoutMessageEvents(t *testing.T) {
 	if len(events) != 0 {
 		t.Fatalf("history produced events %+v", events)
 	}
-	newest := d.messagesBefore(group, nil, 2)
-	if len(newest.messages) != 2 || newest.messages[0].ID != "fb:mid.$b" || newest.messages[1].ID != "fb:mid.$c" {
-		t.Fatalf("newest page %+v", newest.messages)
+	recent, olderExist := d.recentBefore(group, nil)
+	if len(recent) != 3 || recent[0].ID != "fb:mid.$a" || recent[2].ID != "fb:mid.$c" || !olderExist {
+		t.Fatalf("recent %+v, older exist %v", recent, olderExist)
 	}
-	if got := newest.messages[0].Reactions; len(got) != 1 || got[0].Emoji != "👍" || got[0].SenderID != "100003" {
+	if got := recent[1].Reactions; len(got) != 1 || got[0].Emoji != "👍" || got[0].SenderID != "100003" {
 		t.Fatalf("reactions %+v", got)
 	}
-	position := messageCursor(newest.messages[0])
-	older := d.messagesBefore(group, &position, 2)
-	if len(older.messages) != 1 || older.messages[0].ID != "fb:mid.$a" {
-		t.Fatalf("older page %+v", older.messages)
+	position := messageCursor(recent[1])
+	if older, _ := d.recentBefore(group, &position); len(older) != 1 || older[0].ID != "fb:mid.$a" {
+		t.Fatalf("before the middle message: %+v", older)
 	}
-	if !older.hasMoreBefore || !older.oldestKnown || older.oldest.ID != "mid.$a" {
-		t.Fatalf("range %+v", older)
+}
+
+func TestLaterReactionsUpdateTheRecentWindow(t *testing.T) {
+	d, _ := syncedDirectory()
+	d.ingest(history("mid.$a"))
+
+	d.ingest(&table.LSTable{LSUpsertReaction: []*table.LSUpsertReaction{{ThreadKey: group, MessageId: "mid.$a", ActorId: ada, Reaction: "👍"}}})
+	d.ingest(&table.LSTable{LSUpsertReaction: []*table.LSUpsertReaction{{ThreadKey: group, MessageId: "mid.$a", ActorId: ada, Reaction: "❤️"}}})
+	recent, _ := d.recentBefore(group, nil)
+	changed := recent[0].Reactions
+	d.ingest(&table.LSTable{LSDeleteReaction: []*table.LSDeleteReaction{{ThreadKey: group, MessageId: "mid.$a", ActorId: ada}}})
+	recent, _ = d.recentBefore(group, nil)
+
+	if len(changed) != 1 || changed[0].Emoji != "❤️" {
+		t.Fatalf("after changing the reaction: %+v", changed)
+	}
+	if len(recent[0].Reactions) != 0 {
+		t.Fatalf("after removing the reaction: %+v", recent[0].Reactions)
+	}
+}
+
+func TestFetchedHistoryGoesToWhoeverAskedAndNotIntoTheRecentWindow(t *testing.T) {
+	d, _ := syncedDirectory()
+	d.ingest(history("mid.$recent"))
+	batches, done := d.collectHistory(group)
+
+	d.ingest(history("mid.$old1", "mid.$old2"))
+	batch := <-batches
+	done()
+
+	if len(batch.messages) != 2 || batch.messages[0].ID != "fb:mid.$old1" || batch.oldest.ID != "mid.$old1" || !batch.hasMoreBefore {
+		t.Fatalf("batch %+v", batch)
+	}
+	if recent, _ := d.recentBefore(group, nil); len(recent) != 1 || recent[0].ID != "fb:mid.$recent" {
+		t.Fatalf("recent window %+v", recent)
+	}
+}
+
+func TestEndOfHistoryReachesWhoeverAsked(t *testing.T) {
+	d, _ := syncedDirectory()
+	batches, done := d.collectHistory(group)
+	defer done()
+
+	d.ingest(&table.LSTable{LSUpdateExistingMessageRange: []*table.LSUpdateExistingMessageRange{{ThreadKey: group, TimestampMS: sentMs, UnknownBool2: true}}})
+
+	if batch := <-batches; len(batch.messages) != 0 || batch.hasMoreBefore {
+		t.Fatalf("batch %+v", batch)
+	}
+}
+
+func TestRecentWindowIsCappedAndThenAdmitsOlderMessagesExist(t *testing.T) {
+	d, _ := syncedDirectory()
+	tbl := &table.LSTable{LSInsertNewMessageRange: []*table.LSInsertNewMessageRange{{ThreadKey: group}}}
+	for i := range maxRecentMessagesPerThread + 5 {
+		tbl.LSUpsertMessage = append(tbl.LSUpsertMessage, &table.LSUpsertMessage{ThreadKey: group, MessageId: fmt.Sprintf("mid.$%04d", i), SenderId: ada, TimestampMs: sentMs + int64(i)})
+	}
+
+	d.ingest(tbl)
+
+	recent, olderExist := d.recentBefore(group, nil)
+	if len(recent) != maxRecentMessagesPerThread || recent[0].ID != "fb:mid.$0005" || !olderExist {
+		t.Fatalf("%d recent, oldest %s, older exist %v", len(recent), recent[0].ID, olderExist)
+	}
+}
+
+func TestMergingFetchedHistoryKeepsOrderDropsDuplicatesAndRespectsThePosition(t *testing.T) {
+	message := func(id string, offset int64) helper.Message {
+		return helper.Message{ID: id, SentAt: millis(sentMs + offset)}
+	}
+	position := cursor{TimestampMs: sentMs + 30, ID: "fb:c"}
+
+	merged := mergeOlder(
+		[]helper.Message{message("fb:a", 10), message("fb:b", 20), message("fb:c", 30), message("fb:d", 40)},
+		[]helper.Message{message("fb:b", 20)},
+		&position,
+	)
+
+	if len(merged) != 2 || merged[0].ID != "fb:a" || merged[1].ID != "fb:b" {
+		t.Fatalf("merged %+v", merged)
 	}
 }
 
@@ -221,6 +298,44 @@ func TestConversationsArePagedByLastActivity(t *testing.T) {
 	}
 	if len(second) != 1 || second[0].ID != "100002" {
 		t.Fatalf("second page %+v", second)
+	}
+}
+
+func TestConversationsWithTheSameActivityAreNotSkippedAcrossPages(t *testing.T) {
+	d := newDirectory(me)
+	d.ingest(&table.LSTable{LSDeleteThenInsertThread: []*table.LSDeleteThenInsertThread{
+		{ThreadKey: 9, ThreadType: table.GROUP_THREAD, LastActivityTimestampMs: sentMs},
+		{ThreadKey: 10, ThreadType: table.GROUP_THREAD, LastActivityTimestampMs: sentMs},
+	}})
+
+	first := d.conversationsBefore(nil, 1)
+	position := conversationCursor(first[0])
+	second := d.conversationsBefore(&position, 1)
+
+	if len(first) != 1 || len(second) != 1 || first[0].ID == second[0].ID {
+		t.Fatalf("pages %+v then %+v", first, second)
+	}
+}
+
+func TestEncryptedChatIsUnreadUntilReadOrAnswered(t *testing.T) {
+	d := newDirectory(me)
+
+	arrived, isNew := d.noteEncryptedChat(ada, false, sentMs, 0)
+	_, reactionChanged := d.noteEncryptedChat(ada, false, 0, 0)
+	read, readChanged := d.noteEncryptedChat(ada, false, 0, sentMs)
+	answered, _ := d.noteEncryptedChat(ada, false, sentMs+1000, sentMs+1000)
+
+	if !isNew || !arrived.Unread || !arrived.Encrypted || arrived.Kind != helper.KindDirect {
+		t.Fatalf("after a message arrived: %+v (new %v)", arrived, isNew)
+	}
+	if reactionChanged {
+		t.Fatal("a reaction changed the conversation")
+	}
+	if !readChanged || read.Unread {
+		t.Fatalf("after reading: %+v (changed %v)", read, readChanged)
+	}
+	if answered.Unread {
+		t.Fatalf("after my own message: %+v", answered)
 	}
 }
 

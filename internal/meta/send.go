@@ -2,6 +2,7 @@ package meta
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"image"
 	_ "image/gif"
@@ -50,7 +51,7 @@ func readFiles(files []helper.OutgoingFile) ([]outgoingFile, error) {
 		if err != nil {
 			return nil, helper.Errorf(helper.CodeFileProblem, "The file %q could not be read.", filepath.Base(file.Path))
 		}
-		name := firstNonEmpty(file.Name, filepath.Base(file.Path))
+		name := cmp.Or(file.Name, filepath.Base(file.Path))
 		out = append(out, outgoingFile{name: name, contentType: contentTypeOf(name, data), data: data})
 	}
 	return out, nil
@@ -108,6 +109,7 @@ func (c *Client) sendPlain(ctx context.Context, t knownThread, out helper.Outgoi
 		}
 		task.ReplyMetaData = &socket.ReplyMetaData{ReplyMessageId: replyTo, ReplySourceType: 1}
 	}
+	attachments := []helper.Attachment{}
 	for _, file := range files {
 		uploaded, err := fb.GetHTTP().SendMercuryUploadRequest(ctx, t.key, &httpclient.MercuryUploadMedia{
 			Filename: file.name, MimeType: file.contentType, MediaData: file.data,
@@ -119,8 +121,13 @@ func (c *Client) sendPlain(ctx context.Context, t knownThread, out helper.Outgoi
 		if attachmentID == 0 {
 			return helper.Message{}, helper.Errorf(helper.CodeMetaRefused, "Messenger did not accept the file %q.", file.name)
 		}
+		c.sessionDirty.Store(true)
+		kind, _ := mediaKind(file.contentType)
 		task.SendType = table.MEDIA
 		task.AttachmentFBIds = append(task.AttachmentFBIds, attachmentID)
+		attachments = append(attachments, helper.Attachment{
+			ID: strconv.FormatInt(attachmentID, 10), Kind: kind, Type: file.contentType, Name: file.name, Size: int64(len(file.data)),
+		})
 	}
 	resp, err := c.executeSend(ctx, fb, task, &socket.ThreadMarkReadTask{
 		ThreadId: t.key, SyncGroup: inboxSyncGroup, LastReadWatermarkTs: time.Now().UnixMilli(),
@@ -150,7 +157,7 @@ func (c *Client) sendPlain(ctx context.Context, t knownThread, out helper.Outgoi
 		SentAt:         helper.Time(sentAt),
 		Text:           out.Text,
 		ReplyToID:      out.ReplyToID,
-		Attachments:    []helper.Attachment{},
+		Attachments:    attachments,
 	}, nil
 }
 
@@ -200,8 +207,22 @@ type encryptedPart struct {
 	attachments []helper.Attachment
 }
 
+func mediaKind(contentType string) (string, whatsmeow.MediaType) {
+	switch {
+	case strings.HasPrefix(contentType, "image/") && contentType != "image/gif":
+		return "image", whatsmeow.MediaImage
+	case strings.HasPrefix(contentType, "video/"):
+		return "video", whatsmeow.MediaVideo
+	case strings.HasPrefix(contentType, "audio/"):
+		return "audio", whatsmeow.MediaAudio
+	default:
+		return "file", whatsmeow.MediaDocument
+	}
+}
+
 func takesCaption(contentType string) bool {
-	return strings.HasPrefix(contentType, "image/") && contentType != "image/gif" || strings.HasPrefix(contentType, "video/")
+	kind, _ := mediaKind(contentType)
+	return kind == "image" || kind == "video"
 }
 
 func (c *Client) sendEncrypted(ctx context.Context, t knownThread, out helper.Outgoing, files []outgoingFile) ([]helper.Message, error) {
@@ -265,15 +286,7 @@ func (c *Client) sendEncrypted(ctx context.Context, t knownThread, out helper.Ou
 }
 
 func (c *Client) uploadEncrypted(ctx context.Context, wa *whatsmeow.Client, file outgoingFile, caption string) (encryptedPart, error) {
-	kind, mediaType := "file", whatsmeow.MediaDocument
-	switch {
-	case strings.HasPrefix(file.contentType, "image/") && file.contentType != "image/gif":
-		kind, mediaType = "image", whatsmeow.MediaImage
-	case strings.HasPrefix(file.contentType, "video/"):
-		kind, mediaType = "video", whatsmeow.MediaVideo
-	case strings.HasPrefix(file.contentType, "audio/"):
-		kind, mediaType = "audio", whatsmeow.MediaAudio
-	}
+	kind, mediaType := mediaKind(file.contentType)
 	uploaded, err := wa.Upload(ctx, file.data, mediaType)
 	if err != nil {
 		return encryptedPart{}, c.unexpected(err, "Could not upload a file for the encrypted chat")

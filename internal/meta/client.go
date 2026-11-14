@@ -56,20 +56,18 @@ type Client struct {
 	fb           *messagix.Client
 	wa           *whatsmeow.Client
 	device       *store.Device
-	metaUp       bool
-	waUp         bool
-	waFailed     bool
-	everUp       bool
+	conn         connection
+	published    helper.State
 	encrypting   bool
 	restarting   bool
-	restarts     int
 	stopped      bool
+	restarts     int
 	lastRestart  time.Time
-	state        helper.State
 	lastSession  [sha256.Size]byte
 	unread       map[waTypes.JID]map[waTypes.JID][]waTypes.MessageID
 	metaReady    chan struct{}
 	waReady      chan struct{}
+	historyMu    sync.Mutex
 	sessionDirty atomic.Bool
 	background   sync.WaitGroup
 }
@@ -127,7 +125,7 @@ func connect(ctx context.Context, logOut io.Writer, session helper.Session, emit
 		return nil, helper.Errorf(helper.CodeBadSession, "The saved encryption keys could not be read. Log in with only the cookies to register as a new device.")
 	}
 
-	c.setState(helper.State{State: helper.StateConnecting})
+	c.transition(func(*connection) {})
 	if err := c.start(ctx); err != nil {
 		c.keys.close()
 		c.cancel()
@@ -162,16 +160,16 @@ func classify(err error) *helper.Error {
 
 func (c *Client) reportLoginFailure(err error) error {
 	c.log.Error().Err(err).Msg("Could not load Messenger")
-	known := classify(err)
-	switch known {
+	switch known := classify(err); known {
 	case errBadSession:
-		c.setState(helper.State{State: helper.StateLoggedOut, Code: known.Code, Message: known.Message})
+		c.transition(func(conn *connection) { conn.ended = endedWith(helper.StateLoggedOut, known) })
+		return known
 	case errNeedsPerson:
-		c.setState(helper.State{State: helper.StateNeedsPerson, Code: known.Code, Message: known.Message})
+		c.transition(func(conn *connection) { conn.ended = endedWith(helper.StateNeedsPerson, known) })
+		return known
 	default:
 		return errUnreachable
 	}
-	return known
 }
 
 func (c *Client) start(ctx context.Context) error {
@@ -185,9 +183,12 @@ func (c *Client) start(ctx context.Context) error {
 		c.selfID = user.GetFBID()
 		c.self = helper.User{ID: userID(c.selfID), Name: user.GetName(), AvatarURL: user.GetAvatarURL()}
 		c.dir = newDirectory(c.selfID)
+	} else {
+		c.dir.forgetRecent()
 	}
 	c.fb = fb
 	c.mu.Unlock()
+	c.sessionDirty.Store(true)
 	fb.SetEventHandler(func(_ context.Context, evt any) { c.handleMeta(fb, evt) })
 	c.publish(c.dir.ingest(initial))
 	return fb.Connect(c.ctx)
@@ -200,37 +201,36 @@ func (c *Client) publish(events []helper.Event) {
 }
 
 func (c *Client) handleMeta(from *messagix.Client, raw any) {
-	c.sessionDirty.Store(true)
 	switch evt := raw.(type) {
 	case *table.LSTable:
 		c.publish(c.dir.ingest(evt))
 		from.PostHandlePublishResponse(evt)
 	case *messagix.ConnectedEvent, *messagix.ReconnectedEvent:
-		c.metaConnected(from)
+		c.messengerConnected(from)
 	case *messagix.TransientDisconnectEvent:
 		c.log.Warn().Err(evt.Err).Msg("Lost the connection to Messenger, reconnecting")
-		c.update(func() { c.metaUp = false })
+		c.transition(func(conn *connection) { conn.messenger = linkDown })
 	case *messagix.PermanentErrorEvent:
 		c.log.Error().Err(evt.Err).Msg("Messenger closed the connection for good")
 		if websocket.CloseStatus(evt.Err) == dgw.CloseStatusUnauthorized {
-			c.update(func() { c.metaUp = false })
-			c.setState(helper.State{State: helper.StateLoggedOut, Code: errBadSession.Code, Message: errBadSession.Message})
+			c.transition(func(conn *connection) {
+				conn.messenger = linkBroken
+				conn.ended = endedWith(helper.StateLoggedOut, errBadSession)
+			})
 			return
 		}
+		c.transition(func(conn *connection) { conn.messenger = linkBroken })
 		c.restart()
 	}
 }
 
-func (c *Client) metaConnected(from *messagix.Client) {
-	c.update(func() {
-		c.metaUp = true
-		signal(c.metaReady)
-	})
+func (c *Client) messengerConnected(from *messagix.Client) {
+	c.transition(func(conn *connection) { conn.messenger = linkUp })
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.wa == nil && !c.encrypting && c.fb == from && !c.stopped {
-		c.encrypting = true
-		c.background.Go(func() { c.connectEncryption(from) })
+	signal(c.metaReady)
+	if c.wa == nil && c.fb == from {
+		c.spawnEncryption(from, false)
 	}
 }
 
@@ -242,40 +242,22 @@ func signal(ready chan struct{}) {
 	}
 }
 
-func (c *Client) update(change func()) {
+func (c *Client) transition(change func(*connection)) {
 	c.mu.Lock()
-	change()
-	next := c.currentState()
-	c.mu.Unlock()
-	c.setState(next)
-}
-
-func (c *Client) currentState() helper.State {
-	waiting := helper.StateConnecting
-	if c.everUp {
-		waiting = helper.StateReconnecting
+	if c.stopped {
+		c.mu.Unlock()
+		return
 	}
-	switch {
-	case !c.metaUp:
-		return helper.State{State: waiting}
-	case c.waFailed:
-		c.everUp = true
-		return helper.State{State: helper.StateConnected, Code: helper.CodeNotAvailable, Message: "Connected, but encrypted chats are not working right now. The helper keeps trying."}
-	case !c.waUp:
-		return helper.State{State: waiting}
-	default:
-		c.everUp = true
+	change(&c.conn)
+	next := c.conn.public()
+	if next.State == helper.StateConnected {
+		c.conn.wasConnected = true
+	}
+	if c.conn.healthy() {
 		c.restarts = 0
-		return helper.State{State: helper.StateConnected}
 	}
-}
-
-func (c *Client) setState(next helper.State) {
-	c.mu.Lock()
-	changed := next != c.state && !c.stopped
-	if changed {
-		c.state = next
-	}
+	changed := next != c.published
+	c.published = next
 	c.mu.Unlock()
 	if changed {
 		c.emit(helper.StateEvent(next))
@@ -284,16 +266,19 @@ func (c *Client) setState(next helper.State) {
 
 func (c *Client) restart() {
 	c.mu.Lock()
-	if c.restarting || c.stopped {
-		c.mu.Unlock()
+	defer c.mu.Unlock()
+	if c.restarting || c.stopped || c.conn.ended != nil {
 		return
 	}
 	c.restarting = true
 	wait := time.Until(c.lastRestart.Add(min(minRestartInterval<<min(c.restarts, 6), maxRestartInterval)))
 	c.restarts++
-	defer c.mu.Unlock()
 	c.background.Go(func() {
-		defer c.update(func() { c.restarting = false })
+		defer func() {
+			c.mu.Lock()
+			c.restarting = false
+			c.mu.Unlock()
+		}()
 		backoff := max(wait, 0)
 		for {
 			select {
@@ -302,15 +287,12 @@ func (c *Client) restart() {
 				return
 			}
 			c.teardown()
-			c.update(func() { c.metaUp, c.waUp, c.waFailed = false, false, false })
+			c.transition(func(conn *connection) { conn.messenger, conn.encryption = linkDown, linkDown })
 			err := c.start(c.ctx)
 			c.mu.Lock()
 			c.lastRestart = time.Now()
 			c.mu.Unlock()
-			if err == nil {
-				return
-			}
-			if c.reportLoginFailure(err) != errUnreachable {
+			if err == nil || c.reportLoginFailure(err) != errUnreachable {
 				return
 			}
 			backoff = min(max(backoff*2, 10*time.Second), maxRestartBackoff)
@@ -409,7 +391,7 @@ func (c *Client) Logout(ctx context.Context) error {
 			c.log.Error().Err(err).Msg("Could not delete the encryption device")
 		}
 	}
-	c.emit(helper.StateEvent(helper.State{State: helper.StateLoggedOut}))
+	c.transition(func(conn *connection) { conn.ended = &helper.State{State: helper.StateLoggedOut} })
 	c.mu.Lock()
 	c.stopped = true
 	c.mu.Unlock()

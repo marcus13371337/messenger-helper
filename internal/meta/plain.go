@@ -1,6 +1,7 @@
 package meta
 
 import (
+	"cmp"
 	"strings"
 
 	"go.mau.fi/mautrix-meta/pkg/messagix/table"
@@ -24,14 +25,14 @@ func (d *directory) plainMessage(t *thread, wrapped *table.WrappedMessage) helpe
 	for _, blob := range wrapped.BlobAttachments {
 		message.Attachments = append(message.Attachments, plainAttachment(
 			blob.AttachmentFbid, blob.AttachmentType, blob.Filename, blob.Filesize,
-			blob.PlayableUrl, firstNonEmpty(blob.PlayableUrlMimeType, blob.AttachmentMimeType),
+			blob.PlayableUrl, cmp.Or(blob.PlayableUrlMimeType, blob.AttachmentMimeType),
 			blob.PreviewUrl, blob.PreviewUrlMimeType,
 		))
 	}
 	for _, legacy := range wrapped.Attachments {
 		message.Attachments = append(message.Attachments, plainAttachment(
 			legacy.AttachmentFbid, legacy.AttachmentType, legacy.Filename, legacy.Filesize,
-			legacy.PlayableUrl, firstNonEmpty(legacy.PlayableUrlMimeType, legacy.AttachmentMimeType),
+			legacy.PlayableUrl, cmp.Or(legacy.PlayableUrlMimeType, legacy.AttachmentMimeType),
 			legacy.PreviewUrl, legacy.PreviewUrlMimeType,
 		))
 	}
@@ -103,13 +104,4 @@ func nonEmpty(values ...string) []string {
 		}
 	}
 	return out
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

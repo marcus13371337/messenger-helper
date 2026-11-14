@@ -99,7 +99,11 @@ History of one conversation, newest page first.
 - Params: `conversation_id`, `limit` (default 50, at most 200), `before` (the `next` of an earlier answer).
 - Result: `messages` (oldest first within the page), `next` (present when there may be more).
 
-Encrypted conversations answer `not_available`: Meta delivers each encrypted message once and keeps no readable copy. The app is the store for those chats and keeps what `message` events deliver. After a reconnect, `messages` is the way to catch up on unencrypted chats.
+Encrypted conversations answer `not_available`: Meta delivers each encrypted message once and keeps no readable copy. The app is the store for those chats and keeps what `message` events deliver.
+
+Messages that arrived in an unencrypted chat while the connection was down do not come as `message` events. After `state` returns to `connected`, ask `messages` for the conversations that changed.
+
+The newest page comes from what Meta sent when the helper connected, kept current with later messages and reactions; older pages are fetched from Meta on each request.
 
 A message:
 
@@ -113,7 +117,7 @@ A message:
 | `text` | May be empty. Shared links arrive as text. |
 | `reply_to_id` | The message this one answers, when it is a reply. |
 | `attachments` | List, possibly empty. Each has `id`, `kind` (`image`, `video`, `audio`, `sticker`, `file`), `type` (media type), `name`, `size` (bytes, when known) and `ref`. |
-| `reactions` | Only on history: `sender_id`, `emoji`. |
+| `reactions` | On history only: `sender_id`, `emoji`. Live changes come as `reaction` events. |
 | `encrypted` | Whether it travelled end-to-end encrypted. |
 | `unsupported` | `true` when the message has content this protocol cannot carry. Show a pointer to Messenger. |
 
@@ -124,7 +128,13 @@ Keep an attachment's `ref` with the message: it is what `attachment` needs. A `r
 - Params: `conversation_id`, `text`, `reply_to_id`, `files` (list of `{"path": "...", "name": "..."}`; `name` is optional). `text` or `files` is required.
 - Result: `messages`: what was sent, in the same shape as above.
 
-A file's `path` is relative to the helper's folder, or absolute inside it. Anything outside the folder, including through a symlink, is refused with `outside_folder`. In an encrypted chat each file is its own message, and the text is the caption of the first picture or video or else a message of its own, so `messages` can hold several. The same messages also arrive as `message` events with the same ids.
+A file's `path` is relative to the helper's folder, or absolute inside it. Anything outside the folder, including through a symlink, is refused with `outside_folder`.
+
+Sends to one conversation reach Meta in the order the app wrote them; the app does not have to wait for one answer before writing the next. Sends to different conversations run side by side.
+
+In an encrypted chat each file is its own message, and the text is the caption of the first picture or video or else a message of its own, so `messages` can hold several. If Meta accepts some of them and then fails, the answer is still a result: `messages` holds what was sent and `problem` (`code`, `message`) says what went wrong. Send only the rest again.
+
+The same messages also arrive as `message` events with the same ids. In an unencrypted chat the attachments in the answer have no `ref`; the `message` event carries it.
 
 ### `react`
 
@@ -143,7 +153,7 @@ In an encrypted chat this confirms the messages the helper received since it sta
 - Params: `ref` (from a message's attachment), `name` (optional file name to use).
 - Result: `path` (absolute, inside the helper's folder), `name`, `size` (bytes), `type` (media type).
 
-The helper downloads the attachment, decrypting it when needed, into a new file in its folder. The app moves or deletes the file when done. Links of unencrypted attachments run out after a while; the answer is then `not_available`, and a fresh `ref` comes with `messages`.
+The helper downloads the attachment, decrypting it when needed, into a new file in its folder. The app moves or deletes the file when done. Links of unencrypted attachments run out after a while; the answer is then `not_available`. Older pages of `messages` always carry a fresh `ref`. The newest page gets fresh ones when the helper connects again.
 
 ## Events
 

@@ -42,10 +42,10 @@ type server struct {
 
 func Run(ctx context.Context, opts Options) error {
 	s := &server{
-		opts: opts,
+		opts:  opts,
 		out:   &lineWriter{out: opts.Out},
 		lanes: newLanes(),
-		log:  zerolog.New(opts.Log).With().Timestamp().Logger(),
+		log:   zerolog.New(opts.Log).With().Timestamp().Logger(),
 	}
 	lines := make(chan readLine)
 	go readLines(opts.In, lines)

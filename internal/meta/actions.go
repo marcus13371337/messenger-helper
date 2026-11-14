@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ const (
 	inboxSyncGroup       = 1
 	maxThreadPagesToScan = 10
 	historyWait          = 10 * time.Second
+	maxHistoryFetches    = 10
 )
 
 func (c *Client) loadMoreThreads(ctx context.Context, fb *messagix.Client) (bool, error) {
@@ -120,46 +122,61 @@ func (c *Client) Messages(ctx context.Context, q helper.MessagesQuery) (helper.M
 		}
 		before = &parsed
 	}
-	page := c.dir.messagesBefore(t.key, before, q.Limit)
-	if len(page.messages) < q.Limit && page.hasMoreBefore {
-		if err := c.fetchOlder(ctx, t, olderThan(page, before)); err != nil {
+	c.historyMu.Lock()
+	defer c.historyMu.Unlock()
+
+	collected, olderExist := c.dir.recentBefore(t.key, before)
+	reference := cursor{TimestampMs: time.Now().UnixMilli()}
+	switch {
+	case len(collected) > 0:
+		reference = fetchReference(messageCursor(collected[0]))
+	case before != nil:
+		reference, olderExist = fetchReference(*before), true
+	}
+	for fetches := 0; len(collected) < q.Limit && olderExist && fetches < maxHistoryFetches; fetches++ {
+		batch, err := c.fetchOlder(ctx, t, reference)
+		if err != nil {
 			return helper.MessagePage{}, err
 		}
-		select {
-		case <-page.changed:
-		case <-time.After(historyWait):
-		case <-ctx.Done():
-			return helper.MessagePage{}, ctx.Err()
+		olderExist = batch.hasMoreBefore && len(batch.messages) > 0
+		collected = mergeOlder(batch.messages, collected, before)
+		reference = batch.oldest
+	}
+	page := helper.MessagePage{Messages: collected[max(len(collected)-q.Limit, 0):]}
+	if len(page.Messages) > 0 && (len(collected) > q.Limit || olderExist) {
+		page.Next = messageCursor(page.Messages[0]).String()
+	}
+	return page, nil
+}
+
+func fetchReference(position cursor) cursor {
+	return cursor{TimestampMs: position.TimestampMs, ID: strings.TrimPrefix(position.ID, plainMessagePrefix)}
+}
+
+func mergeOlder(older, newer []helper.Message, before *cursor) []helper.Message {
+	known := make(map[string]struct{}, len(newer))
+	for _, message := range newer {
+		known[message.ID] = struct{}{}
+	}
+	merged := make([]helper.Message, 0, len(older)+len(newer))
+	for _, message := range older {
+		_, duplicate := known[message.ID]
+		if !duplicate && (before == nil || messageCursor(message).before(*before)) {
+			merged = append(merged, message)
 		}
-		page = c.dir.messagesBefore(t.key, before, q.Limit)
 	}
-	out := helper.MessagePage{Messages: page.messages}
-	if len(page.messages) == q.Limit {
-		out.Next = messageCursor(page.messages[0]).String()
-	}
-	return out, nil
+	merged = append(merged, newer...)
+	slices.SortFunc(merged, compareMessages)
+	return merged
 }
 
-func olderThan(page historyPage, before *cursor) cursor {
-	switch {
-	case len(page.messages) > 0:
-		oldest := messageCursor(page.messages[0])
-		oldest.ID = strings.TrimPrefix(oldest.ID, plainMessagePrefix)
-		return oldest
-	case before != nil:
-		return cursor{TimestampMs: before.TimestampMs, ID: strings.TrimPrefix(before.ID, plainMessagePrefix)}
-	case page.oldestKnown:
-		return page.oldest
-	default:
-		return cursor{TimestampMs: time.Now().UnixMilli()}
-	}
-}
-
-func (c *Client) fetchOlder(ctx context.Context, t knownThread, reference cursor) error {
+func (c *Client) fetchOlder(ctx context.Context, t knownThread, reference cursor) (historyBatch, error) {
 	fb, err := c.plainClient(ctx)
 	if err != nil {
-		return err
+		return historyBatch{}, err
 	}
+	batches, done := c.dir.collectHistory(t.key)
+	defer done()
 	resp, err := fb.ExecuteTasks(ctx, &socket.FetchMessagesTask{
 		ThreadKey:            t.key,
 		ReferenceTimestampMs: reference.TimestampMs,
@@ -168,12 +185,19 @@ func (c *Client) fetchOlder(ctx context.Context, t knownThread, reference cursor
 		Cursor:               fb.GetCursor(inboxSyncGroup),
 	})
 	if err != nil {
-		return c.unexpected(err, "Could not fetch older messages")
+		return historyBatch{}, c.unexpected(err, "Could not fetch older messages")
 	}
 	if resp != nil {
 		c.dir.ingest(resp)
 	}
-	return nil
+	select {
+	case batch := <-batches:
+		return batch, nil
+	case <-time.After(historyWait):
+		return historyBatch{}, helper.Errorf(helper.CodeNotConnected, "Messenger did not answer in time. Try again in a moment.")
+	case <-ctx.Done():
+		return historyBatch{}, ctx.Err()
+	}
 }
 
 func (c *Client) React(ctx context.Context, r helper.OutgoingReaction) error {
@@ -231,11 +255,15 @@ func (c *Client) MarkRead(ctx context.Context, r helper.ReadMark) error {
 			return err
 		}
 		chat := chatJID(t)
-		for sender, ids := range c.takeUnread(chat) {
+		unread := c.takeUnread(chat)
+		for sender, ids := range unread {
 			if err := wa.MarkRead(ctx, ids, readAt, chat, sender); err != nil {
+				c.putBackUnread(chat, unread)
 				return c.unexpected(err, "Could not mark the encrypted chat as read")
 			}
+			delete(unread, sender)
 		}
+		c.noteEncrypted(chat, 0, readAt.UnixMilli())
 		return nil
 	}
 	fb, err := c.plainClient(ctx)

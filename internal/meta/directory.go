@@ -12,7 +12,7 @@ import (
 	"github.com/marcus13371337/messenger-helper/internal/helper"
 )
 
-const maxRememberedMessagesPerThread = 1000
+const maxRecentMessagesPerThread = 200
 
 type thread struct {
 	key            int64
@@ -22,13 +22,16 @@ type thread struct {
 	lastReadMs     int64
 	members        map[int64]struct{}
 
-	messages      map[string]helper.Message
-	oldest        cursor
-	oldestKnown   bool
-	hasMoreBefore bool
+	recent            map[string]helper.Message
+	olderThanRecent   bool
+	collectingHistory chan historyBatch
 }
 
-func (t *thread) encrypted() bool { return t.kind.IsWhatsApp() }
+type historyBatch struct {
+	messages      []helper.Message
+	oldest        cursor
+	hasMoreBefore bool
+}
 
 type directory struct {
 	mu          sync.Mutex
@@ -36,7 +39,6 @@ type directory struct {
 	threads     map[int64]*thread
 	contacts    map[int64]helper.User
 	hybridToJID map[int64]int64
-	upserted    chan struct{}
 }
 
 func newDirectory(self int64) *directory {
@@ -45,7 +47,6 @@ func newDirectory(self int64) *directory {
 		threads:     map[int64]*thread{},
 		contacts:    map[int64]helper.User{},
 		hybridToJID: map[int64]int64{},
-		upserted:    make(chan struct{}),
 	}
 }
 
@@ -59,7 +60,7 @@ func (d *directory) canonical(key int64) int64 {
 func (d *directory) ensure(key int64) *thread {
 	t, ok := d.threads[key]
 	if !ok {
-		t = &thread{key: key, members: map[int64]struct{}{}, messages: map[string]helper.Message{}, hasMoreBefore: true}
+		t = &thread{key: key, members: map[int64]struct{}{}, recent: map[string]helper.Message{}, olderThanRecent: true}
 		d.threads[key] = t
 	}
 	return t
@@ -137,22 +138,39 @@ func (d *directory) ingest(tbl *table.LSTable) []helper.Event {
 	historical := map[string]struct{}{}
 	for _, upsert := range upserts {
 		t := d.ensure(d.canonical(upsert.GetThreadKey()))
+		batch := historyBatch{}
 		for _, wrapped := range upsert.Messages {
 			historical[wrapped.MessageId] = struct{}{}
-			if wrapped.IsUnsent {
-				continue
+			if !wrapped.IsUnsent {
+				batch.messages = append(batch.messages, d.plainMessage(t, wrapped))
 			}
-			t.remember(d.plainMessage(t, wrapped))
 		}
+		slices.SortFunc(batch.messages, compareMessages)
 		if upsert.Range != nil {
-			t.oldest = cursor{TimestampMs: upsert.Range.MinTimestampMs, ID: upsert.Range.MinMessageId}
-			t.oldestKnown = true
-			t.hasMoreBefore = upsert.Range.HasMoreBefore
+			batch.oldest = cursor{TimestampMs: upsert.Range.MinTimestampMs, ID: upsert.Range.MinMessageId}
+			batch.hasMoreBefore = upsert.Range.HasMoreBefore
 		}
+		if t.collectingHistory != nil {
+			select {
+			case t.collectingHistory <- batch:
+			default:
+			}
+			continue
+		}
+		for _, message := range batch.messages {
+			t.recent[message.ID] = message
+		}
+		t.olderThanRecent = batch.hasMoreBefore
+		t.trimRecent()
 	}
-	if len(upserts) > 0 {
-		close(d.upserted)
-		d.upserted = make(chan struct{})
+	for _, ended := range tbl.LSUpdateExistingMessageRange {
+		t := d.ensure(d.canonical(ended.ThreadKey))
+		if t.collectingHistory != nil && ended.UnknownBool2 && !ended.UnknownBool3 {
+			select {
+			case t.collectingHistory <- historyBatch{}:
+			default:
+			}
+		}
 	}
 	for _, wrapped := range inserts {
 		if wrapped.IsUnsent {
@@ -160,11 +178,18 @@ func (d *directory) ingest(tbl *table.LSTable) []helper.Event {
 		}
 		t := d.ensure(d.canonical(wrapped.ThreadKey))
 		message := d.plainMessage(t, wrapped)
-		t.remember(message)
+		t.recent[message.ID] = message
+		t.trimRecent()
 		t.lastActivityMs = max(t.lastActivityMs, wrapped.TimestampMs)
 		events = append(events, helper.MessageEvent(message))
 	}
 
+	for _, r := range tbl.LSUpsertReaction {
+		d.ensure(d.canonical(r.ThreadKey)).react(plainMessageID(r.MessageId), userID(r.ActorId), r.Reaction)
+	}
+	for _, r := range tbl.LSDeleteReaction {
+		d.ensure(d.canonical(r.ThreadKey)).react(plainMessageID(r.MessageId), userID(r.ActorId), "")
+	}
 	for _, r := range tbl.LSUpsertReaction {
 		if _, bundled := historical[r.MessageId]; bundled {
 			continue
@@ -223,20 +248,33 @@ func (d *directory) reaction(threadKey int64, messageID string, actor int64, emo
 
 func millis(ms int64) helper.Time { return helper.Time(time.UnixMilli(ms)) }
 
-func (t *thread) remember(m helper.Message) {
-	t.messages[m.ID] = m
-	if len(t.messages) <= maxRememberedMessagesPerThread {
+func (t *thread) react(messageID, senderID, emoji string) {
+	message, ok := t.recent[messageID]
+	if !ok {
 		return
 	}
-	sorted := t.sorted()
-	for _, old := range sorted[:len(sorted)-maxRememberedMessagesPerThread] {
-		delete(t.messages, old.ID)
+	reactions := slices.DeleteFunc(slices.Clone(message.Reactions), func(r helper.Reacted) bool { return r.SenderID == senderID })
+	if emoji != "" {
+		reactions = append(reactions, helper.Reacted{SenderID: senderID, Emoji: emoji})
 	}
+	message.Reactions = reactions
+	t.recent[messageID] = message
 }
 
-func (t *thread) sorted() []helper.Message {
-	out := make([]helper.Message, 0, len(t.messages))
-	for _, m := range t.messages {
+func (t *thread) trimRecent() {
+	if len(t.recent) <= maxRecentMessagesPerThread {
+		return
+	}
+	sorted := t.sortedRecent()
+	for _, old := range sorted[:len(sorted)-maxRecentMessagesPerThread] {
+		delete(t.recent, old.ID)
+	}
+	t.olderThanRecent = true
+}
+
+func (t *thread) sortedRecent() []helper.Message {
+	out := make([]helper.Message, 0, len(t.recent))
+	for _, m := range t.recent {
 		out = append(out, m)
 	}
 	slices.SortFunc(out, compareMessages)
@@ -281,7 +319,7 @@ func (d *directory) conversation(t *thread) helper.Conversation {
 		ID:             userID(t.key),
 		Name:           name,
 		Kind:           kind,
-		Encrypted:      t.encrypted(),
+		Encrypted:      t.kind.IsWhatsApp(),
 		Participants:   participants,
 		LastActivityAt: millis(t.lastActivityMs),
 		Unread:         t.lastReadMs < t.lastActivityMs,
@@ -323,7 +361,14 @@ func (d *directory) conversationsBefore(before *cursor, limit int) []helper.Conv
 		all = append(all, t)
 	}
 	slices.SortFunc(all, func(a, b *thread) int {
-		return cmp.Or(cmp.Compare(b.lastActivityMs, a.lastActivityMs), cmp.Compare(b.key, a.key))
+		switch {
+		case threadCursor(b).before(threadCursor(a)):
+			return -1
+		case threadCursor(a).before(threadCursor(b)):
+			return 1
+		default:
+			return 0
+		}
 	})
 	out := make([]helper.Conversation, 0, min(limit, len(all)))
 	for _, t := range all[:min(limit, len(all))] {
@@ -344,19 +389,11 @@ func (c cursor) before(other cursor) bool {
 	return cmp.Or(cmp.Compare(c.TimestampMs, other.TimestampMs), cmp.Compare(c.ID, other.ID)) < 0
 }
 
-type historyPage struct {
-	messages      []helper.Message
-	oldest        cursor
-	oldestKnown   bool
-	hasMoreBefore bool
-	changed       <-chan struct{}
-}
-
-func (d *directory) messagesBefore(key int64, before *cursor, limit int) historyPage {
+func (d *directory) recentBefore(key int64, before *cursor) (messages []helper.Message, olderExist bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	t := d.ensure(key)
-	sorted := t.sorted()
+	sorted := t.sortedRecent()
 	if before != nil {
 		end, _ := slices.BinarySearchFunc(sorted, *before, func(m helper.Message, c cursor) int {
 			if messageCursor(m).before(c) {
@@ -366,12 +403,28 @@ func (d *directory) messagesBefore(key int64, before *cursor, limit int) history
 		})
 		sorted = sorted[:end]
 	}
-	return historyPage{
-		messages:      sorted[max(len(sorted)-limit, 0):],
-		oldest:        t.oldest,
-		oldestKnown:   t.oldestKnown,
-		hasMoreBefore: t.hasMoreBefore,
-		changed:       d.upserted,
+	return sorted, t.olderThanRecent
+}
+
+func (d *directory) collectHistory(key int64) (<-chan historyBatch, func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	t := d.ensure(key)
+	batches := make(chan historyBatch, 8)
+	t.collectingHistory = batches
+	return batches, func() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		t.collectingHistory = nil
+	}
+}
+
+func (d *directory) forgetRecent() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, t := range d.threads {
+		t.recent = map[string]helper.Message{}
+		t.olderThanRecent = true
 	}
 }
 
@@ -379,18 +432,19 @@ func messageCursor(m helper.Message) cursor {
 	return cursor{TimestampMs: time.Time(m.SentAt).UnixMilli(), ID: m.ID}
 }
 
-func (d *directory) noteEncryptedChat(key int64, group bool, activityMs int64) (helper.Conversation, bool) {
+func (d *directory) noteEncryptedChat(key int64, group bool, activityMs, readMs int64) (helper.Conversation, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	t, known := d.threads[key]
-	isNew := !known || !t.encrypted()
-	t = d.ensure(key)
-	if isNew {
+	t := d.ensure(key)
+	before := d.conversation(t)
+	if !t.kind.IsWhatsApp() {
 		t.kind = table.ENCRYPTED_OVER_WA_ONE_TO_ONE
 		if group {
 			t.kind = table.ENCRYPTED_OVER_WA_GROUP
 		}
 	}
 	t.lastActivityMs = max(t.lastActivityMs, activityMs)
-	return d.conversation(t), isNew
+	t.lastReadMs = max(t.lastReadMs, readMs)
+	after := d.conversation(t)
+	return after, after.Encrypted != before.Encrypted || after.Unread != before.Unread
 }

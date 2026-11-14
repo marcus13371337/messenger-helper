@@ -1,6 +1,7 @@
 package meta
 
 import (
+	"cmp"
 	"fmt"
 	"strconv"
 	"strings"
@@ -176,7 +177,7 @@ func addMedia(message *helper.Message, container mediaTransport, mediaType whats
 		return false
 	}
 	message.Attachments = append(message.Attachments, helper.Attachment{
-		ID:   firstNonEmpty(ancillary.GetObjectID(), message.ID),
+		ID:   cmp.Or(ancillary.GetObjectID(), message.ID),
 		Kind: kind,
 		Type: ancillary.GetMimetype(),
 		Name: name,
