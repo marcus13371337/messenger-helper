@@ -343,7 +343,7 @@ func (c *Client) Download(ctx context.Context, ref string, into io.Writer) (help
 	}
 	req.Header.Set("User-Agent", useragent.UserAgent)
 	req.Header.Set("Referer", "https://www.facebook.com/")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.downloads.Do(req)
 	if err != nil {
 		c.log.Error().Msg("Could not reach the attachment's server")
 		return helper.Downloaded{}, errUnreachable

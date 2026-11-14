@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,13 +41,14 @@ var (
 )
 
 type Client struct {
-	log     zerolog.Logger
-	emit    func(helper.Event)
-	cookies *cookies.Cookies
-	keys    *keyStore
-	dir     *directory
-	self    helper.User
-	selfID  int64
+	log       zerolog.Logger
+	emit      func(helper.Event)
+	cookies   *cookies.Cookies
+	downloads *http.Client
+	keys      *keyStore
+	dir       *directory
+	self      helper.User
+	selfID    int64
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -104,6 +106,7 @@ func connect(ctx context.Context, logOut io.Writer, session helper.Session, emit
 	c := &Client{
 		emit:         emit,
 		cookies:      jar,
+		downloads:    http.DefaultClient,
 		unread:       map[waTypes.JID]map[waTypes.JID][]waTypes.MessageID{},
 		historyLocks: map[int64]*sync.Mutex{},
 		metaReady:    make(chan struct{}),

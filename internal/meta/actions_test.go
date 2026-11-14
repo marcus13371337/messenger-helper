@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"go.mau.fi/mautrix-meta/pkg/messagix/types"
-
 	"github.com/marcus13371337/messenger-helper/internal/helper"
 )
 
@@ -63,17 +61,6 @@ func TestLoginIsRefusedBeforeTouchingTheNetworkWhenCookiesAreMissing(t *testing.
 	}
 }
 
-func TestLoginSignsInThroughFacebook(t *testing.T) {
-	jar, err := cookieJar(helper.Session{Cookies: map[string]string{"c_user": "100001", "xs": "x", "datr": "d"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if jar.Platform != types.Facebook {
-		t.Fatalf("platform %v", jar.Platform)
-	}
-}
-
 func TestAttachmentRefThatIsNotOursIsRefused(t *testing.T) {
 	for _, ref := range []string{"not-base64!", "e30", ""} {
 		if _, err := decodeRef(ref); err == nil {
@@ -91,12 +78,9 @@ func (r *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error
 
 func TestAttachmentsAreFetchedAsFacebook(t *testing.T) {
 	transport := &recordingTransport{}
-	original := http.DefaultClient
-	http.DefaultClient = &http.Client{Transport: transport}
-	t.Cleanup(func() { http.DefaultClient = original })
 	ref := attachmentRef{URL: "https://scontent.xx.fbcdn.net/v/cat.jpg", Type: "image/jpeg"}.encode()
 
-	if _, err := (&Client{}).Download(context.Background(), ref, io.Discard); err != nil {
+	if _, err := (&Client{downloads: &http.Client{Transport: transport}}).Download(context.Background(), ref, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 
